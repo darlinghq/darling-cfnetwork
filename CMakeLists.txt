@@ -23,11 +23,11 @@ set(cfnetwork_sources
 	src/CFSocketStream.c
 )
 
-SET(CMAKE_INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib${SUFFIX}/darling")
+SET(CMAKE_INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}/darling")
 SET(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE) 
 SET(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
 
 add_library(cfnetwork SHARED ${cfnetwork_sources})
 target_link_libraries(cfnetwork CFFExtra)
 
-install(TARGETS cfnetwork DESTINATION lib${SUFFIX}/darling)
+install(TARGETS cfnetwork DESTINATION ${CMAKE_INSTALL_LIBDIR}/darling)
