@@ -29,7 +29,8 @@ include_directories(
 	${CMAKE_SOURCE_DIR}/src/external/icu/icuSources/i18n
 	${CMAKE_SOURCE_DIR}/src/external/icu/icuSources/common
 	${CMAKE_SOURCE_DIR}/src/external/coretls/lib
-	${CMAKE_SOURCE_DIR}/src/external/configd/SystemConfiguration.fproj
+	#${CMAKE_SOURCE_DIR}/src/external/configd/SystemConfiguration.fproj
+	${CMAKE_SOURCE_DIR}/src/SystemConfiguration
 	${CMAKE_SOURCE_DIR}/src/external/security/include
 	${CMAKE_SOURCE_DIR}/src/external/security/include/Security
 )
@@ -82,6 +83,7 @@ set(cfnetwork_sources
 	#NetServices/CFNetServiceMonitor.c
 	#NetServices/CFNetServiceBrowser.c
 	#security_cdsa_utils.c
+	dnssd_stub.c
 )
 
 add_framework(CFNetwork
@@ -97,5 +99,6 @@ add_framework(CFNetwork
 		CommonCrypto
 		objc
 		icucore
+		SystemConfiguration
 )
 
