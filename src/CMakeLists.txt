@@ -86,6 +86,8 @@ set(cfnetwork_sources
 	dnssd_stub.c
 )
 
+set(DYLIB_COMPAT_VERSION "1.0.0")
+set(DYLIB_CURRENT_VERSION "807.0.4")
 add_framework(CFNetwork
 	FAT
 	CURRENT_VERSION
