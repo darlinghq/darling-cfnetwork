@@ -19,20 +19,9 @@ include_directories(
 	${CMAKE_CURRENT_SOURCE_DIR}/../include/CFNetwork
 	${CMAKE_CURRENT_SOURCE_DIR}/../private_include
 	${CMAKE_CURRENT_SOURCE_DIR}/../private_include/CFNetwork
-	${CMAKE_SOURCE_DIR}/src/launchd/liblaunch
-	${CMAKE_SOURCE_DIR}/src/CommonCrypto
-	${CMAKE_SOURCE_DIR}/src/libinfo/lookup.subproj
-	${CMAKE_SOURCE_DIR}/src/external/corefoundation
-	${CMAKE_SOURCE_DIR}/src/external/objc4/runtime
-	${CMAKE_SOURCE_DIR}/src/external/libclosure
-	${CMAKE_SOURCE_DIR}/src/external/zlib
-	${CMAKE_SOURCE_DIR}/src/external/icu/icuSources/i18n
-	${CMAKE_SOURCE_DIR}/src/external/icu/icuSources/common
-	${CMAKE_SOURCE_DIR}/src/external/coretls/lib
-	#${CMAKE_SOURCE_DIR}/src/external/configd/SystemConfiguration.fproj
-	${CMAKE_SOURCE_DIR}/src/SystemConfiguration
-	${CMAKE_SOURCE_DIR}/src/external/security/include
-	${CMAKE_SOURCE_DIR}/src/external/security/include/Security
+    ${CMAKE_SOURCE_DIR}/src/external/corefoundation
+    ${CMAKE_SOURCE_DIR}/src/external/security/OSX/libsecurity_ssl/lib
+    ${CMAKE_SOURCE_DIR}/src/external/security/internal-include
 )
 
 set(cfnetwork_sources
@@ -98,9 +87,8 @@ add_framework(CFNetwork
 		system
 		CoreFoundation
 		z
-		CommonCrypto
 		objc
 		icucore
 		SystemConfiguration
+        Security
 )
-
