@@ -20,9 +20,6 @@ include_directories(
 	${CMAKE_CURRENT_SOURCE_DIR}/../include/CFNetwork
 	${CMAKE_CURRENT_SOURCE_DIR}/../private_include
 	${CMAKE_CURRENT_SOURCE_DIR}/../private_include/CFNetwork
-    ${CMAKE_SOURCE_DIR}/src/external/corefoundation
-    ${CMAKE_SOURCE_DIR}/src/external/security/OSX/libsecurity_ssl/lib
-    ${CMAKE_SOURCE_DIR}/src/external/security/internal-include
 )
 
 set(cfnetwork_sources
