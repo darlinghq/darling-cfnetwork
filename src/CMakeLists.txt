@@ -74,6 +74,7 @@ set(cfnetwork_sources
 	#NetServices/CFNetServiceBrowser.c
 	#security_cdsa_utils.c
 	dnssd_stub.c
+	constants.m
 )
 
 set(DYLIB_COMPAT_VERSION "1.0.0")
