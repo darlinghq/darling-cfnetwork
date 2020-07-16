@@ -6,7 +6,7 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -include ${CMAKE_SOURCE_DIR}/src/external/co
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} \
 	-include ${CMAKE_SOURCE_DIR}/src/external/corefoundation/macros.h")
 
-add_definitions(-nostdinc -w)
+add_definitions(-nostdinc -w -DOBJC_OLD_DISPATCH_PROTOTYPES=1)
 
 include_directories(
 	${CMAKE_CURRENT_SOURCE_DIR}
@@ -20,6 +20,9 @@ include_directories(
 	${CMAKE_CURRENT_SOURCE_DIR}/../include/CFNetwork
 	${CMAKE_CURRENT_SOURCE_DIR}/../private_include
 	${CMAKE_CURRENT_SOURCE_DIR}/../private_include/CFNetwork
+	${CMAKE_SOURCE_DIR}/src/external/corefoundation
+	${CMAKE_SOURCE_DIR}/src/external/security/OSX/libsecurity_ssl/lib
+	${CMAKE_SOURCE_DIR}/src/external/security/OSX/include
 )
 
 set(cfnetwork_sources
@@ -78,6 +81,7 @@ set(DYLIB_COMPAT_VERSION "1.0.0")
 set(DYLIB_CURRENT_VERSION "807.0.4")
 add_framework(CFNetwork
 	FAT
+	#CIRCULAR # force it to be circular
 	CURRENT_VERSION
 	SOURCES
 		${cfnetwork_sources}
@@ -89,5 +93,6 @@ add_framework(CFNetwork
 		objc
 		icucore
 		SystemConfiguration
-        Security
+	CIRCULAR_DEPENDENCIES
+		Security
 )
