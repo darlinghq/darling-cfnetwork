@@ -43,6 +43,7 @@ set(cfnetwork_sources
 	URL/_CFURLAccess.c
 	URL/CFURLAuthChallenge.c
 	URL/CFURLRequest.c
+	URL/CFNSURLConnection.m
 	HTTP/CFHTTPServer.c
 	HTTP/CFHTTPMessage.c
 	HTTP/CFHTTPStream.c
