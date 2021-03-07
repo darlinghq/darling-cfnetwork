@@ -2,11 +2,19 @@ project(cfnetwork)
 
 include(darling_framework)
 
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -include ${CMAKE_SOURCE_DIR}/src/external/corefoundation/macros.h")
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -include ${CMAKE_SOURCE_DIR}/src/external/corefoundation/macros.h \
+	-include ${CMAKE_SOURCE_DIR}/src/external/corefoundation/CoreFoundation_Prefix.h")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} \
-	-include ${CMAKE_SOURCE_DIR}/src/external/corefoundation/macros.h")
+	-include ${CMAKE_SOURCE_DIR}/src/external/corefoundation/macros.h \
+	-include ${CMAKE_SOURCE_DIR}/src/external/corefoundation/CoreFoundation_Prefix.h")
 
 add_definitions(-nostdinc -w -DOBJC_OLD_DISPATCH_PROTOTYPES=1)
+add_compile_definitions(
+	INCLUDE_OBJC
+	DEPLOYMENT_TARGET_MACOSX=1
+	__CONSTANT_CFSTRINGS__=1
+	__CONSTANT_STRINGS__=1
+)
 
 include_directories(
 	${CMAKE_CURRENT_SOURCE_DIR}
@@ -23,6 +31,7 @@ include_directories(
 	${CMAKE_SOURCE_DIR}/src/external/corefoundation
 	${CMAKE_SOURCE_DIR}/src/external/security/OSX/libsecurity_ssl/lib
 	${CMAKE_SOURCE_DIR}/src/external/security/OSX/include
+	${CMAKE_SOURCE_DIR}/src/external/foundation/internal_include
 )
 
 set(cfnetwork_sources
@@ -76,6 +85,21 @@ set(cfnetwork_sources
 	#security_cdsa_utils.c
 	dnssd_stub.c
 	constants.m
+
+	URL/NSURLAuthenticationChallenge.m
+	URL/NSURLCache.m
+	URL/NSURLConnection.m
+	URL/NSURLCredential.m
+	URL/NSURLCredentialStorage.m
+	URL/NSURLDownload.m
+	URL/NSURLProtectionSpace.m
+	URL/NSURLProtocol.m
+	URL/NSURLRequest.m
+	URL/NSURLResponse.m
+	URL/NSURLSession.m
+
+	HTTP/NSHTTPCookie.m
+	HTTP/NSHTTPCookieStorage.m
 )
 
 set(DYLIB_COMPAT_VERSION "1.0.0")
@@ -96,4 +120,13 @@ add_framework(CFNetwork
 		SystemConfiguration
 	CIRCULAR_DEPENDENCIES
 		Security
+
+	# can't do it like this; Foundation segfaults ld when created as a flat namespace, so it can't be circular
+	#UPWARD_DEPENDENCIES
+	#	Foundation
+	LINK_FLAGS
+		"-Wl,-upward_library,${CMAKE_BINARY_DIR}/src/external/foundation/Foundation"
+)
+add_dependencies(CFNetwork
+	Foundation
 )
