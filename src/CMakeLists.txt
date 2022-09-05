@@ -111,7 +111,7 @@ set(FRAMEWORK_VERSION "A")
 
 generate_sdk_framework(CFNetwork
     VERSION ${FRAMEWORK_VERSION}
-    HEADER "../include-framework/CFNetwork"
+    HEADER "../darling-framework/include/CFNetwork"
 )
 
 add_framework(CFNetwork
