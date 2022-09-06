@@ -2,6 +2,8 @@ project(cfnetwork)
 
 include(darling_framework)
 
+remove_sdk_framework(CFNetwork)
+
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -include ${CMAKE_SOURCE_DIR}/src/external/corefoundation/macros.h \
 	-include ${CMAKE_SOURCE_DIR}/src/external/corefoundation/CoreFoundation_Prefix.h")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} \
@@ -104,13 +106,21 @@ set(cfnetwork_sources
 
 set(DYLIB_COMPAT_VERSION "1.0.0")
 set(DYLIB_CURRENT_VERSION "807.0.4")
+
+set(FRAMEWORK_VERSION "A")
+
+generate_sdk_framework(CFNetwork
+    VERSION ${FRAMEWORK_VERSION}
+    HEADER "../darling-framework/include/CFNetwork"
+)
+
 add_framework(CFNetwork
 	FAT
 	#CIRCULAR # force it to be circular
 	CURRENT_VERSION
 	SOURCES
 		${cfnetwork_sources}
-	VERSION "A"
+	VERSION ${FRAMEWORK_VERSION}
 	DEPENDENCIES
 		system
 		CoreFoundation
