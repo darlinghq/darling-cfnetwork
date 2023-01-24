@@ -32,7 +32,7 @@ include_directories(
 	${CMAKE_CURRENT_SOURCE_DIR}/../private_include/CFNetwork
 	${CMAKE_SOURCE_DIR}/src/external/corefoundation
 	${CMAKE_SOURCE_DIR}/src/external/security/OSX/libsecurity_ssl/lib
-	${CMAKE_SOURCE_DIR}/src/external/security/OSX/include
+	${CMAKE_SOURCE_DIR}/src/external/security/darling/include/macOS
 	${CMAKE_SOURCE_DIR}/src/external/foundation/internal_include
 )
 
