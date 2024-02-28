@@ -99,6 +99,7 @@ set(cfnetwork_sources
 	URL/NSURLRequest.m
 	URL/NSURLResponse.m
 	URL/NSURLSession.m
+	URL/NSCFURLSession.m
 
 	HTTP/NSHTTPCookie.m
 	HTTP/NSHTTPCookieStorage.m

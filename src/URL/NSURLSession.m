@@ -31,8 +31,22 @@ NSString* const NSURLSessionDownloadTaskResumeData = @"NSURLSessionDownloadTaskR
 @implementation NSURLSessionDataTask
 @end
 
+@implementation NSURLSessionDownloadTask
+@end
+
 @implementation NSURLSessionUploadTask
 @end
 
 @implementation NSURLSessionConfiguration
+
+static NSURLSessionConfiguration *_defaultSessionConfiguration = nil;
+
++ (NSURLSessionConfiguration *)defaultSessionConfiguration {
+	if (_defaultSessionConfiguration == nil) {
+		_defaultSessionConfiguration = [[NSURLSessionConfiguration alloc] init];
+	}
+
+	return _defaultSessionConfiguration;
+}
+
 @end
