@@ -208,7 +208,7 @@ CFURLCacheRef CFURLCacheCreate(CFAllocatorRef allocator, size_t memoryCapacity, 
 size_t CFURLCacheMemoryCapacity(CFURLCacheRef cache) {
     id nsCache = getRetainedNSCache(cache);
     if (nsCache) {
-        size_t result = (size_t)objc_msgSend(nsCache, sel_registerName("_cf_memoryCapacity"));
+        size_t result = ((size_t (*)(id, SEL))objc_msgSend)(nsCache, sel_registerName("_cf_memoryCapacity"));
         CFRelease(nsCache);
         return result;
     } else {
@@ -229,7 +229,7 @@ size_t _CFURLCacheMemoryCapacity(CFURLCacheRef cache) {
 void CFURLCacheSetMemoryCapacity(CFURLCacheRef cache, size_t capacity) {
     id nsCache = getRetainedNSCache(cache);
     if (nsCache) {
-        objc_msgSend(nsCache, sel_registerName("_cf_setMemoryCapacity:"), capacity);
+        ((void (*)(id, SEL, size_t))objc_msgSend)(nsCache, sel_registerName("_cf_setMemoryCapacity:"), capacity);
         CFRelease(nsCache);
     } else {
         _CFURLCacheSetMemoryCapacity(cache, capacity);
@@ -248,7 +248,7 @@ void _CFURLCacheSetMemoryCapacity(CFURLCacheRef cache, size_t capacity) {
 size_t CFURLCacheCurrentMemoryUsage(CFURLCacheRef cache) {
     id nsCache = getRetainedNSCache(cache);
     if (nsCache) {
-        size_t result = (size_t)objc_msgSend(nsCache, sel_registerName("_cf_currentMemoryUsage"));
+        size_t result = ((size_t (*)(id, SEL))objc_msgSend)(nsCache, sel_registerName("_cf_currentMemoryUsage"));
         CFRelease(nsCache);
         return result;
     } else {
@@ -269,7 +269,7 @@ size_t _CFURLCacheCurrentMemoryUsage(CFURLCacheRef cache) {
 size_t CFURLCacheDiskCapacity(CFURLCacheRef cache) {
     id nsCache = getRetainedNSCache(cache);
     if (nsCache) {
-        size_t result = (size_t)objc_msgSend(nsCache, sel_registerName("_cf_diskCapacity"));
+        size_t result = ((size_t (*)(id, SEL))objc_msgSend)(nsCache, sel_registerName("_cf_diskCapacity"));
         CFRelease(nsCache);
         return result;
     } else {
@@ -290,7 +290,7 @@ size_t _CFURLCacheDiskCapacity(CFURLCacheRef cache) {
 void CFURLCacheSetDiskCapacity(CFURLCacheRef cache, size_t capacity) {
     id nsCache = getRetainedNSCache(cache);
     if (nsCache) {
-        objc_msgSend(nsCache, sel_registerName("_cf_setDiskCapacity:"), capacity);
+        ((void (*)(id, SEL, size_t))objc_msgSend)(nsCache, sel_registerName("_cf_setDiskCapacity:"), capacity);
         CFRelease(nsCache);
     } else {
         _CFURLCacheSetDiskCapacity(cache, capacity);
@@ -309,7 +309,7 @@ void _CFURLCacheSetDiskCapacity(CFURLCacheRef cache, size_t capacity) {
 size_t CFURLCacheCurrentDiskUsage(CFURLCacheRef cache) {
     id nsCache = getRetainedNSCache(cache);
     if (nsCache) {
-        size_t result = (size_t)objc_msgSend(nsCache, sel_registerName("_cf_currentDiskUsage"));
+        size_t result = ((size_t (*)(id, SEL))objc_msgSend)(nsCache, sel_registerName("_cf_currentDiskUsage"));
         CFRelease(nsCache);
         return result;
     } else {
@@ -332,7 +332,7 @@ CFCachedURLResponseRef CFURLCacheCopyResponseForRequest(CFURLCacheRef cache,
 {
     id nsCache = getRetainedNSCache(cache);
     if (nsCache) {
-        CFCachedURLResponseRef result = (CFCachedURLResponseRef)objc_msgSend(nsCache,
+        CFCachedURLResponseRef result = ((CFCachedURLResponseRef (*)(id, SEL, CFURLRequestRef))objc_msgSend)(nsCache,
                                                         sel_registerName("_cf_cachedResponseForRequest:"),
                                                         request);
         if (result) {
@@ -373,7 +373,7 @@ Boolean CFURLCacheAddCachedResponseForRequest(CFURLCacheRef cache,
 {
     id nsCache = getRetainedNSCache(cache);
     if (nsCache) {
-        Boolean result = (Boolean)objc_msgSend(nsCache,
+        Boolean result = ((Boolean (*)(id, SEL, CFCachedURLResponseRef, CFURLRequestRef))objc_msgSend)(nsCache,
                                                sel_registerName("_cf_storeCachedResponse:forCFRequest:"),
                                                cachedResponse,
                                                request);
@@ -459,7 +459,7 @@ void CFURLCacheRemoveCachedResponseForRequest(CFURLCacheRef cache,
 {
     id nsCache = getRetainedNSCache(cache);
     if (nsCache) {
-        objc_msgSend(nsCache, sel_registerName("_cf_removeCachedResponseForRequest:"), request);
+        ((void (*)(id, SEL, CFURLRequestRef))objc_msgSend)(nsCache, sel_registerName("_cf_removeCachedResponseForRequest:"), request);
         CFRelease(nsCache);
     } else {
         _CFURLCacheRemoveCachedResponseForRequest(cache, request);
@@ -482,7 +482,7 @@ void _CFURLCacheRemoveCachedResponseForRequest(CFURLCacheRef cache,
 void CFURLCacheRemoveAllCachedResponses(CFURLCacheRef cache) {
     id nsCache = getRetainedNSCache(cache);
     if (nsCache) {
-        objc_msgSend(nsCache, sel_registerName("_cf_removeAllCachedResponses"));
+        ((void (*)(id, SEL))objc_msgSend)(nsCache, sel_registerName("_cf_removeAllCachedResponses"));
         CFRelease(nsCache);
     } else {
         _CFURLCacheRemoveAllCachedResponses(cache);
