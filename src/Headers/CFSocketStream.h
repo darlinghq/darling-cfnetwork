@@ -25,7 +25,7 @@
  
      Contains:   CoreFoundation Network socket streams header
  
-     Copyright:  © 2001-2005 by Apple Computer, Inc., all rights reserved
+     Copyright:  ï¿½ 2001-2005 by Apple Computer, Inc., all rights reserved
  
      Warning:    *** APPLE INTERNAL USE ONLY ***
                  This file may contain unreleased API's
@@ -252,6 +252,7 @@ extern const CFStringRef kCFStreamSSLIsServer                        AVAILABLE_M
  *    Non-Carbon CFM:   not available
  */
 extern const int kCFStreamErrorDomainSOCKS;
+extern const int kCFStreamErrorDomainWinSock;
 
 
 extern const CFStringRef kCFStreamNetworkServiceType ;

@@ -13,6 +13,10 @@
 const int64_t NSURLSessionTransferSizeUnknown = -1LL;
 NSString* const NSURLSessionDownloadTaskResumeData = @"NSURLSessionDownloadTaskResumeData";
 
+const float NSURLSessionTaskPriorityDefault = 0.5;
+const float NSURLSessionTaskPriorityLow = 0.25;
+const float NSURLSessionTaskPriorityHigh = 0.75;
+
 // Documented defaults of URLSessionConfiguration.
 static const NSTimeInterval kDefaultRequestTimeout = 60;
 static const NSTimeInterval kDefaultResourceTimeout = 7 * 24 * 60 * 60;
