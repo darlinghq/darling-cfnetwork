@@ -11,6 +11,10 @@
 const int64_t NSURLSessionTransferSizeUnknown = -1LL;
 NSString* const NSURLSessionDownloadTaskResumeData = @"NSURLSessionDownloadTaskResumeData";
 
+const float NSURLSessionTaskPriorityDefault = 0.5;
+const float NSURLSessionTaskPriorityLow = 0.25;
+const float NSURLSessionTaskPriorityHigh = 0.75;
+
 @implementation NSURLSession
 
 + (void)initialize
