@@ -116,27 +116,9 @@ static NSTimeInterval defaultTimeout = 60.0;
     return _internal->request;
 }
 
-static CFURLRequestRef _CFURLRequestMutableCopyFromNSURLRequest(NSURLRequest *self)
-{
-    CFURLRef url = CFURLRequestGetURL(self->_internal->request);
-    CFURLRequestCachePolicy policy = CFURLRequestGetCachePolicy(self->_internal->request);
-    CFTimeInterval timeout = CFURLRequestGetTimeout(self->_internal->request);
-    CFURLRequestRef req = CFURLRequestCreate(kCFAllocatorDefault, url, policy, timeout);
-    _CFURLSetMutable(req, true);
-    CFURLRequestSetHTTPBody((CFMutableURLRequestRef)req, CFURLRequestGetHTTPBody(self->_internal->request));
-    CFStringRef method = CFURLRequestCopyHTTPMethod(self->_internal->request);
-    if (method != nil) {
-        CFURLRequestSetHTTPMethod((CFMutableURLRequestRef)req, method);
-        CFRelease(method);
-    }
-    CFURLRequestSetHTTPFields((CFMutableURLRequestRef)req, CFURLRequestCopyHTTPFields(self->_internal->request), CFURLRequestCopyHTTPValues(self->_internal->request));
-    return req;
-}
-
 - (id)copyWithZone:(NSZone *)zone
 {
-    CFURLRequestRef req = _CFURLRequestMutableCopyFromNSURLRequest(self);
-    _CFURLSetMutable(req, false);
+    CFURLRequestRef req = CFURLRequestCreateCopy(kCFAllocatorDefault, _internal->request);
     NSURLRequest *copy = [[NSURLRequest alloc] _initWithCFURLRequest:req];
     CFRelease(req);
     return copy;
@@ -144,10 +126,7 @@ static CFURLRequestRef _CFURLRequestMutableCopyFromNSURLRequest(NSURLRequest *se
 
 - (id)mutableCopyWithZone:(NSZone *)zone
 {
-    CFURLRequestRef req = _CFURLRequestMutableCopyFromNSURLRequest(self);
-    NSMutableURLRequest *copy = [[NSMutableURLRequest alloc] _initWithCFURLRequest:req];
-    CFRelease(req);
-    return copy;
+    return [[NSMutableURLRequest alloc] _initWithCFURLRequest:_internal->request];
 }
 
 - (NSString *)debugDescription
@@ -205,8 +184,9 @@ static CFURLRequestRef _CFURLRequestMutableCopyFromNSURLRequest(NSURLRequest *se
 
 - (id)_initWithCFURLRequest:(CFURLRequestRef)req
 {
-    CFMutableURLRequestRef request = (CFMutableURLRequestRef)CFURLRequestCreateMutableCopy(kCFAllocatorDefault, req);
+    CFMutableURLRequestRef request = CFURLRequestCreateMutableCopy(kCFAllocatorDefault, req);
     self = [super _initWithCFURLRequest:request];
+    CFRelease(request);
     return self;
 }
 
