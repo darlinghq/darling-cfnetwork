@@ -77,11 +77,17 @@ __attribute__((visibility("hidden")))
     NSString *_pendingHTTPVersion;
     NSMutableArray *_pendingHeaderLines;
     NSMutableData *_receivedData;
+    NSMutableData *_redirectBody;
     NSURLRequest *_redirectRequest;
+    NSHTTPURLResponse *_redirectResponse;
     NSUInteger _redirectCount;
     CFAbsoluteTime _resourceDeadline;
     BOOL _started;
     BOOL _finished;
+    BOOL _awaitingDisposition;
+    BOOL _writePaused;
+    BOOL _transferDoneWhileAwaiting;
+    int _doneCode;
 }
 
 - (id)_initWithSession:(__NSCFURLSession *)session request:(NSURLRequest *)request identifier:(NSUInteger)identifier completionHandler:(void (^)(NSData *data, NSURLResponse *response, NSError *error))completionHandler;

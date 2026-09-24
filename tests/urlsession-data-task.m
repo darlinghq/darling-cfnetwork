@@ -316,6 +316,117 @@ static void testSuspend(void)
     expect([string(body) isEqualToString:@"slow"], @"suspended task finishes after resume");
 }
 
+@interface Delegate : NSObject <NSURLSessionDataDelegate>
+@property (strong) NSMutableData *data;
+@property (strong) NSMutableArray *events;
+@property (strong) NSError *error;
+@property NSURLSessionResponseDisposition disposition;
+@property BOOL followRedirects;
+@property int64_t bytesSent;
+@property (strong) dispatch_semaphore_t done;
+@property (strong) dispatch_semaphore_t invalidated;
+@end
+
+@implementation Delegate
+
+- (id)init
+{
+    self = [super init];
+    _data = [NSMutableData data];
+    _events = [NSMutableArray array];
+    _disposition = NSURLSessionResponseAllow;
+    _followRedirects = YES;
+    _done = dispatch_semaphore_create(0);
+    _invalidated = dispatch_semaphore_create(0);
+    return self;
+}
+
+- (void)URLSession:(NSURLSession *)session dataTask:(NSURLSessionDataTask *)dataTask didReceiveResponse:(NSURLResponse *)response completionHandler:(void (^)(NSURLSessionResponseDisposition))completionHandler
+{
+    [_events addObject:[NSString stringWithFormat:@"response %ld", (long)[(NSHTTPURLResponse *)response statusCode]]];
+    completionHandler(_disposition);
+}
+
+- (void)URLSession:(NSURLSession *)session dataTask:(NSURLSessionDataTask *)dataTask didReceiveData:(NSData *)data
+{
+    if (![[_events lastObject] isEqualToString:@"data"])
+        [_events addObject:@"data"];
+    [_data appendData:data];
+}
+
+- (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task willPerformHTTPRedirection:(NSHTTPURLResponse *)response newRequest:(NSURLRequest *)request completionHandler:(void (^)(NSURLRequest *))completionHandler
+{
+    [_events addObject:[NSString stringWithFormat:@"redirect %ld %@", (long)[response statusCode], [[request URL] path]]];
+    completionHandler(_followRedirects ? request : nil);
+}
+
+- (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task didSendBodyData:(int64_t)bytesSent totalBytesSent:(int64_t)totalBytesSent totalBytesExpectedToSend:(int64_t)totalBytesExpectedToSend
+{
+    _bytesSent = totalBytesSent;
+}
+
+- (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task didCompleteWithError:(NSError *)error
+{
+    [_events addObject:@"complete"];
+    _error = error;
+    dispatch_semaphore_signal(_done);
+}
+
+- (void)URLSession:(NSURLSession *)session didBecomeInvalidWithError:(NSError *)error
+{
+    [_events addObject:@"invalid"];
+    dispatch_semaphore_signal(_invalidated);
+}
+
+@end
+
+static Delegate *runDelegate(NSURLRequest *request, void (^configure)(Delegate *))
+{
+    Delegate *delegate = [[Delegate alloc] init];
+    if (configure)
+        configure(delegate);
+    NSURLSession *session = [NSURLSession sessionWithConfiguration:[NSURLSessionConfiguration defaultSessionConfiguration] delegate:delegate delegateQueue:nil];
+    [[session dataTaskWithRequest:request] resume];
+    if (dispatch_semaphore_wait(delegate.done, dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC)) != 0)
+        expect(NO, [NSString stringWithFormat:@"delegate task %@ timed out", [request URL]]);
+    [session finishTasksAndInvalidate];
+    if (dispatch_semaphore_wait(delegate.invalidated, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC)) != 0)
+        expect(NO, @"didBecomeInvalidWithError was not called");
+    return delegate;
+}
+
+static void testDelegate(void)
+{
+    Delegate *plain = runDelegate([NSURLRequest requestWithURL:url(@"/redirect?to=/chunked")], nil);
+    NSArray *expected = @[ @"redirect 302 /chunked", @"response 200", @"data", @"complete", @"invalid" ];
+    expect([plain.events isEqual:expected], [NSString stringWithFormat:@"delegate events %@", plain.events]);
+    expect([string(plain.data) isEqualToString:@"one two three"], @"delegate data");
+    expect(plain.error == nil, @"delegate completes without error");
+
+    Delegate *declined = runDelegate([NSURLRequest requestWithURL:url(@"/redirect?to=/text")], ^(Delegate *d) { d.followRedirects = NO; });
+    expected = @[ @"redirect 302 /text", @"response 302", @"data", @"complete", @"invalid" ];
+    expect([declined.events isEqual:expected], [NSString stringWithFormat:@"declined redirect events %@", declined.events]);
+    expect([string(declined.data) isEqualToString:@"redirect body"], @"declined redirect body");
+
+    Delegate *cancelled = runDelegate([NSURLRequest requestWithURL:url(@"/text")], ^(Delegate *d) { d.disposition = NSURLSessionResponseCancel; });
+    expected = @[ @"response 200", @"complete", @"invalid" ];
+    expect([cancelled.events isEqual:expected], [NSString stringWithFormat:@"cancel disposition events %@", cancelled.events]);
+    expect([cancelled.error code] == NSURLErrorCancelled, @"cancel disposition error");
+
+    Delegate *empty = runDelegate([NSURLRequest requestWithURL:url(@"/empty")], nil);
+    expected = @[ @"response 204", @"complete", @"invalid" ];
+    expect([empty.events isEqual:expected], [NSString stringWithFormat:@"204 delegate events %@", empty.events]);
+
+    NSMutableURLRequest *post = [NSMutableURLRequest requestWithURL:url(@"/echo")];
+    [post setHTTPMethod:@"POST"];
+    [post setHTTPBody:[NSMutableData dataWithLength:100000]];
+    Delegate *upload = runDelegate(post, nil);
+    expect(upload.bytesSent == 100000, [NSString stringWithFormat:@"didSendBodyData total %lld", upload.bytesSent]);
+
+    Delegate *failed = runDelegate([NSURLRequest requestWithURL:[NSURL URLWithString:@"http://127.0.0.1:1/"]], nil);
+    expect([failed.error code] == NSURLErrorCannotConnectToHost, @"delegate receives the error");
+}
+
 static void testInvalidation(void)
 {
     NSURLSession *session = [NSURLSession sessionWithConfiguration:[NSURLSessionConfiguration defaultSessionConfiguration]];
@@ -356,6 +467,7 @@ int main(int argc, char **argv)
         testErrors(untrusted, trusted);
         testCancel();
         testSuspend();
+        testDelegate();
         testInvalidation();
     }
     if (failures == 0)

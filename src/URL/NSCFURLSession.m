@@ -4,9 +4,10 @@
 //
 //  Copyright (c) 2014 Apportable. All rights reserved.
 //
-//  Data tasks run on libcurl (see NSURLSessionCurl.m). Redirect handling and
-//  the libcurl error mapping follow swift-corelibs-foundation's URLSession
-//  (Apache License 2.0 with Runtime Library Exception).
+//  Data tasks run on libcurl (see NSURLSessionCurl.m). Redirect handling, the
+//  libcurl error mapping and the response-disposition pause follow
+//  swift-corelibs-foundation's URLSession (Apache License 2.0 with Runtime
+//  Library Exception).
 //
 
 #import "NSCFURLSession.h"
@@ -40,6 +41,7 @@ typedef void (^DataTaskCompletionHandler)(NSData *data, NSURLResponse *response,
 
 @interface __NSCFURLSession ()
 - (NSURLSessionConfiguration *)_configurationNoCopy;
+- (id)_delegateRespondingTo:(SEL)selector;
 - (void)_addDelegateBlock:(void (^)(void))block;
 - (void)_taskDidFinish:(NSURLSessionTask *)task;
 @end
@@ -114,6 +116,12 @@ typedef void (^DataTaskCompletionHandler)(NSData *data, NSURLResponse *response,
     id delegate = [_delegate retain];
     [_lock unlock];
     return [delegate autorelease];
+}
+
+- (id)_delegateRespondingTo:(SEL)selector
+{
+    id delegate = [self delegate];
+    return [delegate respondsToSelector:selector] ? delegate : nil;
 }
 
 - (NSString *)sessionDescription
@@ -209,6 +217,8 @@ typedef void (^DataTaskCompletionHandler)(NSData *data, NSURLResponse *response,
 - (void)_deliverInvalidation
 {
     [self _addDelegateBlock:^{
+        id delegate = [self _delegateRespondingTo:@selector(URLSession:didBecomeInvalidWithError:)];
+        [delegate URLSession:self didBecomeInvalidWithError:nil];
         [_lock lock];
         id old = _delegate;
         _delegate = nil;
@@ -396,7 +406,9 @@ static BOOL isSameOrigin(NSURL *a, NSURL *b)
     [_pendingHTTPVersion release];
     [_pendingHeaderLines release];
     [_receivedData release];
+    [_redirectBody release];
     [_redirectRequest release];
+    [_redirectResponse release];
     free(_curlErrorBuffer);
     [super dealloc];
 }
@@ -546,7 +558,8 @@ LOCKED_GETTER(int64_t, countOfBytesExpectedToReceive, _countOfBytesExpectedToRec
     {
         suspended = _suspendCount > 0;
     }
-    [self _curl]->easy_pause(_easy, suspended ? CURLPAUSE_ALL : CURLPAUSE_CONT);
+    int mask = suspended ? CURLPAUSE_ALL : (_writePaused ? CURLPAUSE_RECV : CURLPAUSE_CONT);
+    [self _curl]->easy_pause(_easy, mask);
 }
 
 - (void)_releaseEasy
@@ -637,6 +650,8 @@ LOCKED_GETTER(int64_t, countOfBytesExpectedToReceive, _countOfBytesExpectedToRec
     [self _setCurrentRequest:request];
     _pendingStatusCode = 0;
     [_pendingHeaderLines removeAllObjects];
+    _writePaused = NO;
+    _transferDoneWhileAwaiting = NO;
 
     NSURL *url = [request URL];
     NSString *scheme = [[url scheme] lowercaseString];
@@ -861,6 +876,10 @@ LOCKED_GETTER(int64_t, countOfBytesExpectedToReceive, _countOfBytesExpectedToRec
     if (redirect != nil)
     {
         _redirectRequest = [redirect retain];
+        _redirectResponse = [response retain];
+        // Kept in case the delegate declines the redirect.
+        if ([_session _delegateRespondingTo:@selector(URLSession:task:willPerformHTTPRedirection:newRequest:completionHandler:)] != nil)
+            _redirectBody = [[NSMutableData alloc] init];
         return;
     }
     [self _deliverResponse:response];
@@ -874,6 +893,51 @@ LOCKED_GETTER(int64_t, countOfBytesExpectedToReceive, _countOfBytesExpectedToRec
         _response = [response retain];
         _countOfBytesExpectedToReceive = [response expectedContentLength];
     }
+    if (_completionHandler != nil)
+        return;
+    id delegate = [_session _delegateRespondingTo:@selector(URLSession:dataTask:didReceiveResponse:completionHandler:)];
+    if (delegate == nil)
+        return;
+
+    _awaitingDisposition = YES;
+    [_session _addDelegateBlock:^{
+        [delegate URLSession:_session dataTask:self didReceiveResponse:response completionHandler:^(NSURLSessionResponseDisposition disposition) {
+            _NSURLSessionCurlPerform(^{
+                [self _applyDisposition:disposition];
+            });
+        }];
+    }];
+}
+
+- (void)_applyDisposition:(NSURLSessionResponseDisposition)disposition
+{
+    if (_finished || !_awaitingDisposition)
+        return;
+    _awaitingDisposition = NO;
+
+    if (disposition == NSURLSessionResponseAllow)
+    {
+        if (_transferDoneWhileAwaiting)
+        {
+            [self _transferDoneWithCode:_doneCode];
+        }
+        else
+        {
+            _writePaused = NO;
+            [self _updatePause];
+        }
+        return;
+    }
+
+    @synchronized(self)
+    {
+        _state = NSURLSessionTaskStateCanceling;
+    }
+    [self _abortTransfer];
+    if (disposition == NSURLSessionResponseCancel)
+        [self _finishWithError:[self _errorWithCode:NSURLErrorCancelled description:@"cancelled"]];
+    else
+        [self _finishWithError:[self _errorWithCode:NSURLErrorUnknown description:[NSString stringWithFormat:@"response disposition %ld is not supported yet", (long)disposition]]];
 }
 
 - (void)_deliverData:(NSData *)data
@@ -887,28 +951,61 @@ LOCKED_GETTER(int64_t, countOfBytesExpectedToReceive, _countOfBytesExpectedToRec
         if (_receivedData == nil)
             _receivedData = [[NSMutableData alloc] init];
         [_receivedData appendData:data];
+        return;
+    }
+    id delegate = [_session _delegateRespondingTo:@selector(URLSession:dataTask:didReceiveData:)];
+    if (delegate != nil)
+    {
+        [_session _addDelegateBlock:^{
+            [delegate URLSession:_session dataTask:self didReceiveData:data];
+        }];
     }
 }
 
 - (size_t)_receivedBody:(const char *)bytes length:(size_t)length
 {
     if (_redirectRequest != nil)
+    {
+        [_redirectBody appendBytes:bytes length:length];
         return length;
+    }
+    if (_awaitingDisposition)
+    {
+        _writePaused = YES;
+        return CURL_WRITEFUNC_PAUSE;
+    }
     [self _deliverData:[NSData dataWithBytes:bytes length:length]];
     return length;
 }
 
 - (void)_uploadedBytes:(int64_t)uploaded
 {
+    int64_t sent, expected, delta;
     @synchronized(self)
     {
-        if (uploaded > _countOfBytesSent)
-            _countOfBytesSent = uploaded;
+        delta = uploaded - _countOfBytesSent;
+        if (delta <= 0)
+            return;
+        _countOfBytesSent = uploaded;
+        sent = _countOfBytesSent;
+        expected = _countOfBytesExpectedToSend;
     }
+    id delegate = [_session _delegateRespondingTo:@selector(URLSession:task:didSendBodyData:totalBytesSent:totalBytesExpectedToSend:)];
+    if (delegate == nil)
+        return;
+    [_session _addDelegateBlock:^{
+        [delegate URLSession:_session task:self didSendBodyData:delta totalBytesSent:sent totalBytesExpectedToSend:expected];
+    }];
 }
 
 - (void)_curlTransferDidCompleteWithCode:(CURLcode)code
 {
+    if (_awaitingDisposition)
+    {
+        _transferDoneWhileAwaiting = YES;
+        _doneCode = code;
+        return;
+    }
     [self _transferDoneWithCode:code];
 }
 
@@ -921,6 +1018,7 @@ LOCKED_GETTER(int64_t, countOfBytesExpectedToReceive, _countOfBytesExpectedToRec
         message = [NSString stringWithUTF8String:text];
     }
     [self _releaseEasy];
+    _transferDoneWhileAwaiting = NO;
 
     if (code != CURLE_OK)
     {
@@ -932,20 +1030,67 @@ LOCKED_GETTER(int64_t, countOfBytesExpectedToReceive, _countOfBytesExpectedToRec
         [self _followRedirect];
         return;
     }
+    if (_redirectBody != nil)
+    {
+        // The body of a redirect the delegate declined.
+        NSData *body = [_redirectBody autorelease];
+        _redirectBody = nil;
+        [self _deliverData:body];
+    }
     [self _finishWithError:nil];
 }
 
 - (void)_followRedirect
 {
     NSURLRequest *request = [_redirectRequest autorelease];
+    NSHTTPURLResponse *response = [_redirectResponse autorelease];
     _redirectRequest = nil;
+    _redirectResponse = nil;
 
     if (++_redirectCount > kMaximumRedirects)
     {
         [self _finishWithError:[self _errorWithCode:NSURLErrorHTTPTooManyRedirects description:@"too many HTTP redirects"]];
         return;
     }
-    [self _startTransferWithRequest:request];
+
+    id delegate = [_session _delegateRespondingTo:@selector(URLSession:task:willPerformHTTPRedirection:newRequest:completionHandler:)];
+    if (delegate == nil)
+    {
+        [self _redirectDecided:request response:response];
+        return;
+    }
+    [_session _addDelegateBlock:^{
+        [delegate URLSession:_session task:self willPerformHTTPRedirection:response newRequest:request completionHandler:^(NSURLRequest *chosen) {
+            NSURLRequest *copy = [chosen copy];
+            _NSURLSessionCurlPerform(^{
+                [self _redirectDecided:copy response:response];
+            });
+            [copy release];
+        }];
+    }];
+}
+
+- (void)_redirectDecided:(NSURLRequest *)request response:(NSHTTPURLResponse *)response
+{
+    if (_finished)
+        return;
+    if (request != nil)
+    {
+        [_redirectBody release];
+        _redirectBody = nil;
+        [self _startTransferWithRequest:request];
+        return;
+    }
+
+    // Declined: the redirect response and its body become the result.
+    [self _deliverResponse:response];
+    if (_awaitingDisposition)
+    {
+        _transferDoneWhileAwaiting = YES;
+        _doneCode = CURLE_OK;
+        return;
+    }
+    [self _transferDoneWithCode:CURLE_OK];
 }
 
 // May run on any thread when no transfer was ever started.
@@ -970,7 +1115,14 @@ LOCKED_GETTER(int64_t, countOfBytesExpectedToReceive, _countOfBytesExpectedToRec
     __NSCFURLSession *session = _session;
     [session _addDelegateBlock:^{
         if (_completionHandler != nil)
+        {
             _completionHandler(data, response, error);
+        }
+        else
+        {
+            id delegate = [session _delegateRespondingTo:@selector(URLSession:task:didCompleteWithError:)];
+            [delegate URLSession:session task:self didCompleteWithError:error];
+        }
         [session _taskDidFinish:self];
     }];
 }
