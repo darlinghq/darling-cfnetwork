@@ -34,6 +34,7 @@ include_directories(
 	${CMAKE_SOURCE_DIR}/src/external/security/OSX/libsecurity_ssl/lib
 	${CMAKE_SOURCE_DIR}/src/external/security/darling/include/macOS
 	${CMAKE_SOURCE_DIR}/src/external/foundation/internal_include
+	${CMAKE_SOURCE_DIR}/src/external/curl/curl/include
 )
 
 set(cfnetwork_sources
@@ -100,6 +101,7 @@ set(cfnetwork_sources
 	URL/NSURLResponse.m
 	URL/NSURLSession.m
 	URL/NSCFURLSession.m
+	URL/NSURLSessionCurl.m
 
 	HTTP/NSHTTPCookie.m
 	HTTP/NSHTTPCookieStorage.m

@@ -577,7 +577,7 @@ Boolean CFURLRequestSetHTTPBody(CFMutableURLRequestRef request, CFDataRef data) 
         if (request->_body != NULL) {
             CFRelease(request->_body);
         }
-        request->_body = CFRetain(data);
+        request->_body = data != NULL ? CFRetain(data) : NULL;
     }
     return true;
 }

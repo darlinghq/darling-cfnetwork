@@ -2,109 +2,88 @@
 #import <Foundation/NSURLSession.h>
 #import <dispatch/dispatch.h>
 
-@class NSOperationQueue, NSString, __NSCFSessionBridge;
+@class NSOperationQueue, NSString, NSMutableSet, NSMutableData, NSMutableArray, NSLock, NSHTTPURLResponse;
+
+// Concrete classes behind the abstract NSURLSession API. Instance variables
+// live in these @interfaces so that the i386 (fragile ABI) build can lay them out.
 
 __attribute__((visibility("hidden")))
-@interface __NSCFURLSessionConfiguration : NSObject
+@interface __NSCFURLSessionConfiguration : NSURLSessionConfiguration {
+    NSString *_identifier;
+    NSURLRequestCachePolicy _requestCachePolicy;
+    NSTimeInterval _timeoutIntervalForRequest;
+    NSTimeInterval _timeoutIntervalForResource;
+    NSURLRequestNetworkServiceType _networkServiceType;
+    BOOL _allowsCellularAccess;
+    BOOL _discretionary;
+    BOOL _sessionSendsLaunchEvents;
+    NSDictionary *_connectionProxyDictionary;
+    SSLProtocol _TLSMinimumSupportedProtocol;
+    SSLProtocol _TLSMaximumSupportedProtocol;
+    BOOL _HTTPShouldUsePipelining;
+    BOOL _HTTPShouldSetCookies;
+    NSHTTPCookieAcceptPolicy _HTTPCookieAcceptPolicy;
+    NSDictionary *_HTTPAdditionalHeaders;
+    NSInteger _HTTPMaximumConnectionsPerHost;
+    NSHTTPCookieStorage *_HTTPCookieStorage;
+    NSURLCredentialStorage *_URLCredentialStorage;
+    NSURLCache *_URLCache;
+    NSArray *_protocolClasses;
+}
 @end
 
 __attribute__((visibility("hidden")))
-@interface __NSCFURLSession : NSObject {
-    __NSCFURLSessionConfiguration *_nsCFConfig;
+@interface __NSCFURLSession : NSURLSession {
+    NSURLSessionConfiguration *_configuration;
     BOOL _invalid;
+    BOOL _isSharedSession;
     NSOperationQueue *_delegateQueue;
     id <NSURLSessionDelegate> _delegate;
     NSString *_sessionDescription;
-    dispatch_queue_t _workQueue;
-    __NSCFSessionBridge *_connectionSession;
-    __NSCFURLSession *_extraRetain;
-    NSOperationQueue *_realDelegateQueue;
+    NSLock *_lock;
+    NSMutableSet *_tasks;
+    NSUInteger _nextTaskIdentifier;
 }
 
-@property(retain) NSOperationQueue *realDelegateQueue; // @synthesize realDelegateQueue=_realDelegateQueue;
-@property(retain) __NSCFURLSession *extraRetain; // @synthesize extraRetain=_extraRetain;
-@property BOOL invalid; // @synthesize invalid=_invalid;
-@property(retain) __NSCFSessionBridge *connectionSession; // @synthesize connectionSession=_connectionSession;
-@property(retain) dispatch_queue_t workQueue; // @synthesize workQueue=_workQueue;
-@property(copy) NSString *sessionDescription; // @synthesize sessionDescription=_sessionDescription;
-@property(readonly) id <NSURLSessionDelegate> delegate; // @synthesize delegate=_delegate;
-@property(readonly) NSOperationQueue *delegateQueue; // @synthesize delegateQueue=_delegateQueue;
-@property(copy) __NSCFURLSessionConfiguration *configuration;
-
-+ (id)sessionWithConfiguration:(id)configuration delegate:(id)delegate delegateQueue:(id)delegateQueue;
-+ (id)sessionWithConfiguration:(id)configuration;
-+ (id)sharedSession;
-+ (void)_releaseProcessAssertionForSessionIdentifier:(NSString *)identifier;
-+ (void)_sendPendingCallbacksForSessionIdentifier:(NSString *)identifier;
-
-// + (const struct ClassicConnectionSession *)defaultClassicConnectionSession;
-
 - (id)initWithConfiguration:(NSURLSessionConfiguration *)configuration delegate:(id <NSURLSessionDelegate>)delegate delegateQueue:(NSOperationQueue *)queue;
+- (void)_markShared;
 
-- (void)delegate_didFinishEventsForBackgroundURLSession;
-- (BOOL)can_delegate_didFinishEventsForBackgroundURLSession;
-- (id)delegate_downloadTaskNeedsDownloadDirectory:(id)needsDownloadDirectory;
-- (BOOL)can_delegate_downloadTaskNeedsDownloadDirectory;
-- (void)delegate_downloadTask:(NSURLSessionDataTask *)task didReceiveResponse:(NSURLResponse *)response;
-- (BOOL)can_delegate_downloadTask_didReceiveResponse;
-- (void)delegate_downloadTask:(NSURLSessionDownloadTask *)task didResumeAtOffset:(int64_t)offset expectedTotalBytes:(int64_t)expectedTotalBytes;
-- (BOOL)can_delegate_downloadTask_didResumeAtOffset;
-- (void)delegate_downloadTask:(NSURLSessionDownloadTask *)task didWriteData:(int64_t)bytesWritten totalBytesWritten:(int64_t)totalBytesWritten totalBytesExpectedToWrite:(int64_t)totalBytesExpectedToWrite;
-- (BOOL)can_delegate_downloadTask_didWriteData;
-- (void)delegate_downloadTask:(NSURLSessionDownloadTask *)task didFinishDownloadingToURL:(NSURL *)location;
-- (BOOL)can_delegate_downloadTask_didFinishDownloadingToURL;
-- (void)delegate_dataTask:(NSURLSessionTask *)task willCacheResponse:(NSCachedURLResponse *)proposedResponse  completionHandler:(void (^)(NSCachedURLResponse *cachedResponse))completionHandler;
-- (BOOL)can_delegate_dataTask_willCacheResponse;
-- (void)delegate_dataTask:(NSURLSessionDataTask *)task didReceiveData:(NSData *)data;
-- (BOOL)can_delegate_dataTask_didReceiveData;
-- (void)delegate_dataTask:(NSURLSessionDataTask *)task didBecomeDownloadTask:(NSURLSessionDownloadTask *)downloadTask;
-- (BOOL)can_delegate_dataTask_didBecomeDownloadTask;
-- (void)delegate_dataTask:(NSURLSessionDataTask *)task didReceiveResponse:(NSURLResponse *)response completionHandler:(void (^)(NSURLSessionResponseDisposition disposition))completionHandler;
-- (BOOL)can_delegate_dataTask_didReceiveResponse;
-- (void)delegate_task:(NSURLSessionTask *)task didCompleteWithError:(NSError *)error;
-- (BOOL)can_delegate_task_didCompleteWithError;
-- (void)delegate_task:(NSURLSessionTask *)task didSendBodyData:(int64_t)bytesSent totalBytesSent:(int64_t)totalBytesSent totalBytesExpectedToSend:(int64_t)totalBytesExpectedToSend;
-- (BOOL)can_delegate_task_didSendBodyData;
-- (void)delegate_task:(NSURLSessionTask *)task needNewBodyStream:(void (^)(NSInputStream *bodyStream))completionHandler;
-- (BOOL)can_delegate_task_needNewBodyStream;
-- (void)delegate_task:(NSURLSessionTask *)task didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge  completionHandler:(void (^)(NSURLSessionAuthChallengeDisposition disposition, NSURLCredential *credential))completionHandler;
-- (BOOL)can_delegate_task_didReceiveChallenge;
-- (void)delegate_task:(NSURLSessionTask *)task willPerformHTTPRedirection:(NSHTTPURLResponse *)response newRequest:(NSURLRequest *)request completionHandler:(void (^)(NSURLRequest *))completionHandler;
-- (BOOL)can_delegate_task_willPerformHTTPRedirection;
-- (void)delegate_didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge  completionHandler:(void (^)(NSURLSessionAuthChallengeDisposition disposition, NSURLCredential *credential))completionHandler;
-- (BOOL)can_delegate_didReceiveChallenge;
+@end
 
-- (void)addDelegateBlock:(void (^)(void))block;
+__attribute__((visibility("hidden")))
+@interface __NSCFURLSessionDataTask : NSURLSessionDataTask {
+    // Written under @synchronized(self), or on the transport thread.
+    __NSCFURLSession *_session;
+    NSUInteger _taskIdentifier;
+    NSURLRequest *_originalRequest;
+    NSURLRequest *_currentRequest;
+    NSURLResponse *_response;
+    int64_t _countOfBytesReceived;
+    int64_t _countOfBytesSent;
+    int64_t _countOfBytesExpectedToSend;
+    int64_t _countOfBytesExpectedToReceive;
+    NSString *_taskDescription;
+    NSURLSessionTaskState _state;
+    NSError *_error;
+    NSUInteger _suspendCount;
 
-- (NSURLSessionDownloadTask *)downloadTaskWithResumeData:(NSData *)resumeData;
-- (NSURLSessionDownloadTask *)downloadTaskWithResumeData:(NSData *)resumeData completionHandler:(void (^)(NSData *data, NSURLResponse *response, NSError *error))completionHandler;
-- (NSURLSessionDownloadTask *)downloadTaskWithURL:(NSURL *)url;
-- (NSURLSessionDownloadTask *)downloadTaskWithURL:(NSURL *)url completionHandler:(void (^)(NSData *data, NSURLResponse *response, NSError *error))completionHandler;
-- (NSURLSessionDownloadTask *)downloadTaskWithRequest:(NSURLRequest *)request;
-- (NSURLSessionDownloadTask *)downloadTaskWithRequest:(NSURLRequest *)request completionHandler:(void (^)(NSData *data, NSURLResponse *response, NSError *error))completionHandler;
-- (NSURLSessionUploadTask *)uploadTaskWithRequest:(NSURLRequest *)request fromFile:(NSURL *)fileURL;
-- (NSURLSessionUploadTask *)uploadTaskWithRequest:(NSURLRequest *)request fromFile:(NSURL *)fileURL completionHandler:(void (^)(NSData *data, NSURLResponse *response, NSError *error))completionHandler;
-- (NSURLSessionUploadTask *)uploadTaskWithRequest:(NSURLRequest *)request fromData:(NSData *)bodyData;
-- (NSURLSessionUploadTask *)uploadTaskWithRequest:(NSURLRequest *)request fromData:(NSData *)bodyData completionHandler:(void (^)(NSData *data, NSURLResponse *response, NSError *error))completionHandler;
-- (NSURLSessionUploadTask *)uploadTaskWithStreamedRequest:(NSURLRequest *)request;
-- (NSURLSessionDataTask *)dataTaskWithRequest:(NSURLRequest *)request;
-- (NSURLSessionDataTask *)dataTaskWithRequest:(NSURLRequest *)request completionHandler:(void (^)(NSData *data, NSURLResponse *response, NSError *error))completionHandler;
-- (NSURLSessionDataTask *)dataTaskWithURL:(NSURL *)url;
-- (NSURLSessionDataTask *)dataTaskWithURL:(NSURL *)url completionHandler:(void (^)(NSData *data, NSURLResponse *response, NSError *error))completionHandler;
-- (NSURLSessionDataTask *)dataTaskWithHTTPGetRequest:(NSURL *)url;
-- (NSURLSessionDataTask *)dataTaskWithHTTPGetRequest:(NSURL *)url completionHandler:(void (^)(NSData *data, NSURLResponse *response, NSError *error))completionHandler;
+    // Only touched on the transport thread.
+    void (^_completionHandler)(NSData *data, NSURLResponse *response, NSError *error);
+    void *_easy;
+    void *_headerList;
+    NSData *_uploadBody;
+    char *_curlErrorBuffer;
+    NSInteger _pendingStatusCode;
+    NSString *_pendingHTTPVersion;
+    NSMutableArray *_pendingHeaderLines;
+    NSMutableData *_receivedData;
+    NSURLRequest *_redirectRequest;
+    NSUInteger _redirectCount;
+    CFAbsoluteTime _resourceDeadline;
+    BOOL _started;
+    BOOL _finished;
+}
 
-- (void)getTasksWithCompletionHandler:(id)handler;
-- (void)flushWithCompletionHandler:(id)handler;
-- (void)resetWithCompletionHandler:(id)handler;
-- (void)finishTasksAndInvalidate;
-- (void)invalidateAndCancel;
-- (void)_onqueue_completeInvalidation:(BOOL)completeInvalidation;
-- (void)_onqueue_completeInvalidationFinal;
-- (void)_onqueue_withTasks:(id)tasks;
-- (BOOL)isBackgroundSession;
-- (id)getConfiguration;
-- (void)dealloc;
-- (id)copyWithZone:(NSZone *)zone;
+- (id)_initWithSession:(__NSCFURLSession *)session request:(NSURLRequest *)request identifier:(NSUInteger)identifier completionHandler:(void (^)(NSData *data, NSURLResponse *response, NSError *error))completionHandler;
 
 @end
