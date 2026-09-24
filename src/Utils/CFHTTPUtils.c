@@ -160,8 +160,8 @@ Boolean _CFHTTPParseContentTypeField(CFStringRef* textEncoding,
     if (CFStringFindCharacterFromSet(content_type, semicolonSet, needle, 0, &found)) {
         needle = CFRangeMake(found.location + found.length, length - (found.location + found.length));
         mimeTypeEnd = found.location - 1;
-        if (CFStringFindWithOptionsAndLocale(content_type, CFSTR("charset="), needle, 0, NULL, &found)) {
-            charsetStart = found.location;
+        if (CFStringFindWithOptionsAndLocale(content_type, CFSTR("charset="), needle, kCFCompareCaseInsensitive, NULL, &found)) {
+            charsetStart = found.location + found.length;
         }
     }
 
@@ -175,17 +175,21 @@ Boolean _CFHTTPParseContentTypeField(CFStringRef* textEncoding,
     }
 
     if (charsetStart != -1 && textEncoding) {
-
+        CFIndex charsetLimit = length;
         needle = CFRangeMake(charsetStart, length - charsetStart);
-        if (CFStringFindCharacterFromSet(content_type, notSpaceSet, needle, 0, &found)) {
-            charsetStart = found.location;
+        if (CFStringFindCharacterFromSet(content_type, semicolonSet, needle, 0, &found)) {
+            charsetLimit = found.location;
         }
-
-        if (CFStringFindCharacterFromSet(content_type, notSpaceSet, needle, kCFCompareBackwards, &found)) {
-            charsetEnd = found.location;
+        while (charsetStart < charsetLimit && CFStringGetCharacterAtIndex(content_type, charsetStart) == '"') {
+            charsetStart++;
         }
-
-        *textEncoding = CFStringCreateWithSubstring(kCFAllocatorDefault, content_type, CFRangeMake(charsetStart, charsetEnd - charsetStart + 1));
+        charsetEnd = charsetLimit - 1;
+        while (charsetEnd >= charsetStart && (CFStringGetCharacterAtIndex(content_type, charsetEnd) == '"' || CFStringGetCharacterAtIndex(content_type, charsetEnd) == ' ')) {
+            charsetEnd--;
+        }
+        if (charsetEnd >= charsetStart) {
+            *textEncoding = CFStringCreateWithSubstring(kCFAllocatorDefault, content_type, CFRangeMake(charsetStart, charsetEnd - charsetStart + 1));
+        }
     }
 
     if (mimeTypeEnd - mimeTypeStart > 0 && mimeType) {

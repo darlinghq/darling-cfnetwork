@@ -191,11 +191,16 @@ CFURLResponseRef CFURLResponseCreateWithCFHTTPMessage(CFAllocatorRef allocator,
         &response->mimeType,
         (CFStringRef)CFDictionaryGetValue(response->headerFields, CFSTR("Content-Type")));
 
+    // -1 is NSURLResponseUnknownLength.
+    response->expectedLength = -1;
     CFStringRef content_length = (CFStringRef)CFDictionaryGetValue(response->headerFields, CFSTR("Content-Length"));
-    if (content_length != NULL) {
-        response->expectedLength = CFStringGetIntValue(content_length);
-    } else {
-        response->expectedLength = 0;
+    char length_text[32];
+    if (content_length != NULL && CFStringGetCString(content_length, length_text, sizeof(length_text), kCFStringEncodingASCII)) {
+        char *end;
+        long long length = strtoll(length_text, &end, 10);
+        if (end != length_text && *end == '\0' && length >= 0) {
+            response->expectedLength = length;
+        }
     }
 
     response->statusCode = CFHTTPMessageGetResponseStatusCode(responseMessage);
