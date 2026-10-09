@@ -238,7 +238,14 @@ static NSTimeInterval defaultTimeout = 60.0;
 {
     CFMutableURLRequestRef req = (CFMutableURLRequestRef)[self _CFURLRequest];
     CFIndex idx = CFURLRequestFirstFieldIndex(req, (CFStringRef)field, 0);
-    if (idx != kCFNotFound)
+    if (value == nil)
+    {
+        if (idx != kCFNotFound)
+        {
+            CFURLRequestRemoveHTTPField(req, idx);
+        }
+    }
+    else if (idx != kCFNotFound)
     {
         CFURLRequestReplaceHTTPField(req, idx, (CFStringRef)value);
     }

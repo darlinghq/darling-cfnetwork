@@ -358,7 +358,13 @@ Boolean CFURLRequestShouldUseHTTPPipelining(CFURLRequestRef request) {
 }
 
 CFIndex CFURLRequestFirstFieldIndex(CFURLRequestRef request, CFStringRef key, CFIndex start) {
-    return CFArrayGetFirstIndexOfValue(request->_keys, CFRangeMake(start, CFArrayGetCount(request->_keys) - start), key);
+    // HTTP field names are case-insensitive.
+    for (CFIndex i = start; i < CFArrayGetCount(request->_keys); i++) {
+        if (CFStringCompare(CFArrayGetValueAtIndex(request->_keys, i), key, kCFCompareCaseInsensitive) == kCFCompareEqualTo) {
+            return i;
+        }
+    }
+    return kCFNotFound;
 }
 
 CFStringRef CFURLRequestGetHeaderFieldValue(CFURLRequestRef request, CFStringRef key) {
