@@ -2221,9 +2221,9 @@ CFHostCancelInfoResolution(CFHostRef theHost, CFHostInfoType info) {
 		
 		CFRunLoopSourceContext ctxt = {
 			0,								// version
-			NULL,							// info
-			NULL,							// retain
-			NULL,							// release
+			host,							// info
+			CFRetain,						// retain
+			CFRelease,						// release
 			NULL,							// copyDescription
 			NULL,							// equal
 			NULL,							// hash
