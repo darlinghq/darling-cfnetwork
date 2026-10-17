@@ -156,6 +156,7 @@ static void _HostDestroy(_CFHost* host);
 static CFStringRef _HostDescribe(_CFHost* host);
 
 static void _HostCancel(_CFHost* host);
+static Boolean _HostIsCancelSource(CFTypeRef lookup);
 
 static Boolean _HostBlockUntilComplete(_CFHost* host);
 
@@ -330,6 +331,21 @@ _HostDescribe(_CFHost* host) {
 	__CFSpinUnlock(&host->_lock);
 	
 	return result;
+}
+
+
+/* static */ Boolean
+_HostIsCancelSource(CFTypeRef lookup) {
+	
+	CFRunLoopSourceContext ctxt;
+	
+	if (CFGetTypeID(lookup) != CFRunLoopSourceGetTypeID())
+		return FALSE;
+	
+	memset(&ctxt, 0, sizeof(ctxt));
+	CFRunLoopSourceGetContext((CFRunLoopSourceRef)lookup, &ctxt);
+	
+	return ctxt.perform == (void(*)(void*))(&_HostCancel);
 }
 
 
@@ -2470,6 +2486,16 @@ CFHostUnscheduleFromRunLoop(CFHostRef theHost, CFRunLoopRef runLoop, CFStringRef
 		/* If there is a current lookup, need to unschedule it. */
 		if (host->_lookup) {
 			_CFTypeUnscheduleFromRunLoop(host->_lookup, runLoop, runLoopMode);			
+
+			/* A pending cancel source holds a reference to the host.  With no run
+			   loop left it can never be delivered, so drop it now instead of
+			   keeping the host alive for as long as the source lives. */
+			if (CFArrayGetCount(host->_schedules) == 0 && _HostIsCancelSource(host->_lookup)) {
+				CFRunLoopSourceInvalidate((CFRunLoopSourceRef)(host->_lookup));
+				CFRelease(host->_lookup);
+				host->_lookup = NULL;
+				host->_type = _kCFNullHostInfoType;
+			}
 		}
 	}
 
