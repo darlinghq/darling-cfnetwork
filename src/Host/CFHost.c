@@ -2299,8 +2299,13 @@ CFHostCancelInfoResolution(CFHostRef theHost, CFHostInfoType info) {
 		// Release the lookup now.
 		CFRelease(host->_lookup);
 		
-		// Create the cancel source
-		host->_lookup = CFRunLoopSourceCreate(CFGetAllocator(theHost), 0, &ctxt);
+		// Create the cancel source, unless no run loop can deliver it: it
+		// would hold the host and be held by it forever.
+		if (CFArrayGetCount(host->_schedules) == 0) {
+			host->_lookup = NULL;
+			host->_type = _kCFNullHostInfoType;
+		} else
+			host->_lookup = CFRunLoopSourceCreate(CFGetAllocator(theHost), 0, &ctxt);
 		
 		// If the cancel was created, need to schedule and signal it.
 		if (host->_lookup) {
