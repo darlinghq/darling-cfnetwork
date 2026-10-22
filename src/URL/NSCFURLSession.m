@@ -23,6 +23,7 @@
 #import <Foundation/NSException.h>
 #import <Foundation/NSLock.h>
 #import <Foundation/NSOperation.h>
+#import <Foundation/NSPathUtilities.h>
 #import <Foundation/NSProcessInfo.h>
 #import <Foundation/NSSet.h>
 #import <Foundation/NSString.h>
@@ -188,6 +189,79 @@ typedef void (^DataTaskCompletionHandler)(NSData *data, NSURLResponse *response,
 - (NSURLSessionDataTask *)dataTaskWithHTTPGetRequest:(NSURL *)url completionHandler:(DataTaskCompletionHandler)completionHandler
 {
     return [self dataTaskWithURL:url completionHandler:completionHandler];
+}
+
+- (NSURLSessionDownloadTask *)downloadTaskWithRequest:(NSURLRequest *)request completionHandler:(DownloadTaskCompletionHandler)completionHandler
+{
+    if (request == nil)
+    {
+        [NSException raise:NSInvalidArgumentException format:@"Cannot create a download task without a request"];
+    }
+    [_lock lock];
+    if (_invalid)
+    {
+        [_lock unlock];
+        [NSException raise:NSGenericException format:@"Task created in a session that has been invalidated"];
+    }
+    NSUInteger ident = _nextTaskIdentifier++;
+    [_lock unlock];
+
+    __NSCFURLSessionDownloadTask *task = [[__NSCFURLSessionDownloadTask alloc] _initWithSession:self request:request identifier:ident completionHandler:completionHandler];
+
+    [_lock lock];
+    [_tasks addObject:task];
+    [_lock unlock];
+    return [task autorelease];
+}
+
+- (NSURLSessionDownloadTask *)downloadTaskWithRequest:(NSURLRequest *)request
+{
+    return [self downloadTaskWithRequest:request completionHandler:nil];
+}
+
+- (NSURLSessionDownloadTask *)downloadTaskWithURL:(NSURL *)url completionHandler:(DownloadTaskCompletionHandler)completionHandler
+{
+    return [self downloadTaskWithRequest:[NSURLRequest requestWithURL:url] completionHandler:completionHandler];
+}
+
+- (NSURLSessionDownloadTask *)downloadTaskWithURL:(NSURL *)url
+{
+    return [self downloadTaskWithURL:url completionHandler:nil];
+}
+
+- (NSURLSessionDownloadTask *)downloadTaskWithResumeData:(NSData *)resumeData completionHandler:(DownloadTaskCompletionHandler)completionHandler
+{
+    return [self downloadTaskWithRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:@"about:blank"]] completionHandler:completionHandler];
+}
+
+- (NSURLSessionDownloadTask *)downloadTaskWithResumeData:(NSData *)resumeData
+{
+    return [self downloadTaskWithResumeData:resumeData completionHandler:nil];
+}
+
+- (NSURLSessionUploadTask *)uploadTaskWithRequest:(NSURLRequest *)request fromFile:(NSURL *)fileURL completionHandler:(DataTaskCompletionHandler)completionHandler
+{
+    return (NSURLSessionUploadTask *)[self dataTaskWithRequest:request completionHandler:completionHandler];
+}
+
+- (NSURLSessionUploadTask *)uploadTaskWithRequest:(NSURLRequest *)request fromFile:(NSURL *)fileURL
+{
+    return (NSURLSessionUploadTask *)[self dataTaskWithRequest:request completionHandler:nil];
+}
+
+- (NSURLSessionUploadTask *)uploadTaskWithRequest:(NSURLRequest *)request fromData:(NSData *)bodyData completionHandler:(DataTaskCompletionHandler)completionHandler
+{
+    return (NSURLSessionUploadTask *)[self dataTaskWithRequest:request completionHandler:completionHandler];
+}
+
+- (NSURLSessionUploadTask *)uploadTaskWithRequest:(NSURLRequest *)request fromData:(NSData *)bodyData
+{
+    return (NSURLSessionUploadTask *)[self dataTaskWithRequest:request completionHandler:nil];
+}
+
+- (NSURLSessionUploadTask *)uploadTaskWithStreamedRequest:(NSURLRequest *)request
+{
+    return (NSURLSessionUploadTask *)[self dataTaskWithRequest:request completionHandler:nil];
 }
 
 - (void)getTasksWithCompletionHandler:(void (^)(NSArray *dataTasks, NSArray *uploadTasks, NSArray *downloadTasks))completionHandler
@@ -1114,9 +1188,13 @@ LOCKED_GETTER(int64_t, countOfBytesExpectedToReceive, _countOfBytesExpectedToRec
     NSURLResponse *response = [self response];
     __NSCFURLSession *session = _session;
     [session _addDelegateBlock:^{
+        [self retain];
         if (_completionHandler != nil)
         {
-            _completionHandler(data, response, error);
+            void (^handler)(NSData *data, NSURLResponse *response, NSError *error) = [[_completionHandler retain] autorelease];
+            [_completionHandler release];
+            _completionHandler = nil;
+            handler(data, response, error);
         }
         else
         {
@@ -1124,7 +1202,134 @@ LOCKED_GETTER(int64_t, countOfBytesExpectedToReceive, _countOfBytesExpectedToRec
             [delegate URLSession:session task:self didCompleteWithError:error];
         }
         [session _taskDidFinish:self];
+        [self autorelease];
     }];
+}
+
+@end
+
+@implementation __NSCFURLSessionDownloadTask
+
+- (id)_initWithSession:(__NSCFURLSession *)session request:(NSURLRequest *)request identifier:(NSUInteger)identifier completionHandler:(DownloadTaskCompletionHandler)completionHandler
+{
+    self = [super init];
+    if (self) {
+        _session = session;
+        _originalRequest = [request copy];
+        _currentRequest = [request copy];
+        _taskIdentifier = identifier;
+        _completionHandler = [completionHandler copy];
+        _state = NSURLSessionTaskStateSuspended;
+
+        [self retain];
+        _innerTask = [[session dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+            [self _handleInnerCompletionWithData:data response:response error:error];
+            [self autorelease];
+        }] retain];
+    }
+    return self;
+}
+
+- (void)_handleInnerCompletionWithData:(NSData *)data response:(NSURLResponse *)response error:(NSError *)error
+{
+    _response = [response retain];
+    _error = [error retain];
+    _state = NSURLSessionTaskStateCompleted;
+
+    NSURL *tempURL = nil;
+    if (error == nil && data != nil) {
+        NSString *guid = [[NSProcessInfo processInfo] globallyUniqueString];
+        NSString *tempDir = NSTemporaryDirectory();
+        if (tempDir == nil)
+            tempDir = @"/tmp";
+        NSString *tempPath = [tempDir stringByAppendingPathComponent:guid];
+        if ([data writeToFile:tempPath atomically:YES]) {
+            tempURL = [NSURL fileURLWithPath:tempPath];
+        }
+    }
+
+    __NSCFURLSession *session = _session;
+    if (_completionHandler != nil) {
+        DownloadTaskCompletionHandler handler = [[_completionHandler retain] autorelease];
+        [_completionHandler release];
+        _completionHandler = nil;
+        handler(tempURL, response, error);
+    } else {
+        if (tempURL != nil) {
+            id downloadDelegate = [session _delegateRespondingTo:@selector(URLSession:downloadTask:didFinishDownloadingToURL:)];
+            if (downloadDelegate) {
+                [downloadDelegate URLSession:session downloadTask:self didFinishDownloadingToURL:tempURL];
+            }
+        }
+        id taskDelegate = [session _delegateRespondingTo:@selector(URLSession:task:didCompleteWithError:)];
+        if (taskDelegate) {
+            [taskDelegate URLSession:session task:self didCompleteWithError:error];
+        }
+    }
+    [session _taskDidFinish:self];
+}
+
+- (void)resume {
+    _state = NSURLSessionTaskStateRunning;
+    [_innerTask resume];
+}
+
+- (void)suspend {
+    _state = NSURLSessionTaskStateSuspended;
+    [_innerTask suspend];
+}
+
+- (void)cancel {
+    _state = NSURLSessionTaskStateCanceling;
+    [_innerTask cancel];
+}
+
+- (NSURLSessionTaskState)state {
+    return _innerTask ? [_innerTask state] : _state;
+}
+
+- (NSURLResponse *)response {
+    return _innerTask ? [_innerTask response] : _response;
+}
+
+- (NSURLRequest *)originalRequest {
+    return _originalRequest;
+}
+
+- (NSURLRequest *)currentRequest {
+    return _innerTask ? [_innerTask currentRequest] : _currentRequest;
+}
+
+- (NSUInteger)taskIdentifier {
+    return _taskIdentifier;
+}
+
+- (NSString *)taskDescription {
+    return _taskDescription;
+}
+
+- (void)setTaskDescription:(NSString *)desc {
+    [_taskDescription release];
+    _taskDescription = [desc copy];
+}
+
+- (int64_t)countOfBytesReceived {
+    return _innerTask ? [_innerTask countOfBytesReceived] : _countOfBytesReceived;
+}
+
+- (int64_t)countOfBytesExpectedToReceive {
+    return _innerTask ? [_innerTask countOfBytesExpectedToReceive] : _countOfBytesExpectedToReceive;
+}
+
+- (void)dealloc {
+    [_originalRequest release];
+    [_currentRequest release];
+    [_response release];
+    [_error release];
+    [_innerTask release];
+    [_completionHandler release];
+    [_taskDescription release];
+    [super dealloc];
 }
 
 @end

@@ -93,3 +93,25 @@ __attribute__((visibility("hidden")))
 - (id)_initWithSession:(__NSCFURLSession *)session request:(NSURLRequest *)request identifier:(NSUInteger)identifier completionHandler:(void (^)(NSData *data, NSURLResponse *response, NSError *error))completionHandler;
 
 @end
+
+typedef void (^DownloadTaskCompletionHandler)(NSURL *location, NSURLResponse *response, NSError *error);
+
+__attribute__((visibility("hidden")))
+@interface __NSCFURLSessionDownloadTask : NSURLSessionDownloadTask {
+    __NSCFURLSession *_session;
+    NSURLRequest *_originalRequest;
+    NSURLRequest *_currentRequest;
+    NSURLResponse *_response;
+    NSURLSessionTaskState _state;
+    NSError *_error;
+    NSURLSessionDataTask *_innerTask;
+    DownloadTaskCompletionHandler _completionHandler;
+    NSUInteger _taskIdentifier;
+    NSString *_taskDescription;
+    int64_t _countOfBytesReceived;
+    int64_t _countOfBytesExpectedToReceive;
+}
+
+- (id)_initWithSession:(__NSCFURLSession *)session request:(NSURLRequest *)request identifier:(NSUInteger)identifier completionHandler:(DownloadTaskCompletionHandler)completionHandler;
+
+@end
