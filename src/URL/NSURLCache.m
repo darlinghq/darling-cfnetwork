@@ -67,7 +67,10 @@ static NSUInteger NSURLCacheDefaultDiskCapacity = 10000000;
 - (void)dealloc
 {
     [_response release];
-    CFRelease(_cachedResponseRef);
+    if (_cachedResponseRef != NULL)
+    {
+        CFRelease(_cachedResponseRef);
+    }
     [super dealloc];
 }
 
