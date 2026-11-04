@@ -62,7 +62,11 @@ static void deliverMetrics(__NSCFURLSession *session, NSURLSessionTask *task, NS
 - (void)_taskDidFinish:(NSURLSessionTask *)task;
 @end
 
-@interface __NSCFURLSessionDataTask () <_NSURLSessionCurlTransfer>
+@interface __NSCFURLSessionDataTask () <_NSURLSessionCurlTransfer> {
+    /* Told of each piece of body as it arrives, when a download task wraps this one. */
+    void (^_bodyObserver)(int64_t received, int64_t expected);
+}
+- (void)_setBodyObserver:(void (^)(int64_t received, int64_t expected))observer;
 - (void)_receivedHeaderLine:(const char *)bytes length:(size_t)length;
 - (size_t)_receivedBody:(const char *)bytes length:(size_t)length;
 - (void)_uploadedBytes:(int64_t)uploaded;
@@ -495,6 +499,7 @@ static BOOL isSameOrigin(NSURL *a, NSURL *b)
     [_pendingHTTPVersion release];
     [_pendingHeaderLines release];
     [_receivedData release];
+    [_bodyObserver release];
     [_redirectBody release];
     [_redirectRequest release];
     [_redirectResponse release];
@@ -1031,12 +1036,23 @@ LOCKED_GETTER(int64_t, countOfBytesExpectedToReceive, _countOfBytesExpectedToRec
         [self _finishWithError:[self _errorWithCode:NSURLErrorUnknown description:[NSString stringWithFormat:@"response disposition %ld is not supported yet", (long)disposition]]];
 }
 
+- (void)_setBodyObserver:(void (^)(int64_t received, int64_t expected))observer
+{
+    [_bodyObserver release];
+    _bodyObserver = [observer copy];
+}
+
 - (void)_deliverData:(NSData *)data
 {
+    int64_t received, expected;
     @synchronized(self)
     {
         _countOfBytesReceived += [data length];
+        received = _countOfBytesReceived;
+        expected = _countOfBytesExpectedToReceive;
     }
+    if (_bodyObserver != nil)
+        _bodyObserver(received, expected);
     if (_completionHandler != nil)
     {
         if (_receivedData == nil)
@@ -1266,12 +1282,35 @@ LOCKED_GETTER(int64_t, countOfBytesExpectedToReceive, _countOfBytesExpectedToRec
             [self autorelease];
         }] retain];
         [(__NSCFURLSessionDataTask *)_innerTask _setMetricsReportedByOwner];
+        /* The delegate hears how far the download is (Feather's progress ring); at most
+           ten times a second, and always the last piece. */
+        if (_completionHandler == nil) {
+            __block int64_t reported = 0;
+            __block CFAbsoluteTime reportedAt = 0;
+            [(__NSCFURLSessionDataTask *)_innerTask _setBodyObserver:^(int64_t received, int64_t expected) {
+                CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+                if (received != expected && now - reportedAt < 0.1)
+                    return;
+                id delegate = [session _delegateRespondingTo:@selector(URLSession:downloadTask:didWriteData:totalBytesWritten:totalBytesExpectedToWrite:)];
+                if (delegate == nil)
+                    return;
+                int64_t written = received - reported;
+                reported = received;
+                reportedAt = now;
+                [session _addDelegateBlock:^{
+                    [delegate URLSession:session downloadTask:self didWriteData:written totalBytesWritten:received
+                        totalBytesExpectedToWrite:expected >= 0 ? expected : NSURLSessionTransferSizeUnknown];
+                }];
+            }];
+        }
     }
     return self;
 }
 
 - (void)_handleInnerCompletionWithData:(NSData *)data response:(NSURLResponse *)response error:(NSError *)error
 {
+    /* It holds this task: let go of it. */
+    [(__NSCFURLSessionDataTask *)_innerTask _setBodyObserver:nil];
     _response = [response retain];
     _error = [error retain];
     _state = NSURLSessionTaskStateCompleted;
