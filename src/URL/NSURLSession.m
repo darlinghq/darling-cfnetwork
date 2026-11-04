@@ -78,6 +78,9 @@ static const NSInteger kDefaultMaximumConnectionsPerHost = 6;
 @dynamic connectionProxyDictionary, TLSMinimumSupportedProtocol, TLSMaximumSupportedProtocol;
 @dynamic HTTPShouldUsePipelining, HTTPShouldSetCookies, HTTPCookieAcceptPolicy, HTTPAdditionalHeaders;
 @dynamic HTTPMaximumConnectionsPerHost, HTTPCookieStorage, URLCredentialStorage, URLCache, protocolClasses;
+@dynamic waitsForConnectivity, allowsExpensiveNetworkAccess, allowsConstrainedNetworkAccess, requiresDNSSECValidation;
+@dynamic multipathServiceType, shouldUseExtendedBackgroundIdleMode, sharedContainerIdentifier;
+@dynamic TLSMinimumSupportedProtocolVersion, TLSMaximumSupportedProtocolVersion;
 
 + (NSURLSessionConfiguration *)defaultSessionConfiguration
 {
@@ -119,6 +122,17 @@ static const NSInteger kDefaultMaximumConnectionsPerHost = 6;
 @synthesize URLCredentialStorage = _URLCredentialStorage;
 @synthesize URLCache = _URLCache;
 @synthesize protocolClasses = _protocolClasses;
+// Recorded for the app to read back; the libcurl transport does not act on them (it does not
+// wait for connectivity, and every network counts as unconstrained and inexpensive).
+@synthesize waitsForConnectivity = _waitsForConnectivity;
+@synthesize allowsExpensiveNetworkAccess = _allowsExpensiveNetworkAccess;
+@synthesize allowsConstrainedNetworkAccess = _allowsConstrainedNetworkAccess;
+@synthesize requiresDNSSECValidation = _requiresDNSSECValidation;
+@synthesize multipathServiceType = _multipathServiceType;
+@synthesize shouldUseExtendedBackgroundIdleMode = _shouldUseExtendedBackgroundIdleMode;
+@synthesize sharedContainerIdentifier = _sharedContainerIdentifier;
+@synthesize TLSMinimumSupportedProtocolVersion = _TLSMinimumSupportedProtocolVersion;
+@synthesize TLSMaximumSupportedProtocolVersion = _TLSMaximumSupportedProtocolVersion;
 
 - (id)init
 {
@@ -133,6 +147,10 @@ static const NSInteger kDefaultMaximumConnectionsPerHost = 6;
         _HTTPShouldSetCookies = YES;
         _HTTPCookieAcceptPolicy = NSHTTPCookieAcceptPolicyOnlyFromMainDocumentDomain;
         _HTTPMaximumConnectionsPerHost = kDefaultMaximumConnectionsPerHost;
+        _allowsExpensiveNetworkAccess = YES;
+        _allowsConstrainedNetworkAccess = YES;
+        _TLSMinimumSupportedProtocolVersion = 0x0303; // tls_protocol_version_TLSv12
+        _TLSMaximumSupportedProtocolVersion = 0x0304; // tls_protocol_version_TLSv13
     }
     return self;
 }
@@ -146,6 +164,7 @@ static const NSInteger kDefaultMaximumConnectionsPerHost = 6;
     [_URLCredentialStorage release];
     [_URLCache release];
     [_protocolClasses release];
+    [_sharedContainerIdentifier release];
     [super dealloc];
 }
 
@@ -172,6 +191,15 @@ static const NSInteger kDefaultMaximumConnectionsPerHost = 6;
     copy->_URLCredentialStorage = [_URLCredentialStorage retain];
     copy->_URLCache = [_URLCache retain];
     copy->_protocolClasses = [_protocolClasses copy];
+    copy->_waitsForConnectivity = _waitsForConnectivity;
+    copy->_allowsExpensiveNetworkAccess = _allowsExpensiveNetworkAccess;
+    copy->_allowsConstrainedNetworkAccess = _allowsConstrainedNetworkAccess;
+    copy->_requiresDNSSECValidation = _requiresDNSSECValidation;
+    copy->_multipathServiceType = _multipathServiceType;
+    copy->_shouldUseExtendedBackgroundIdleMode = _shouldUseExtendedBackgroundIdleMode;
+    copy->_sharedContainerIdentifier = [_sharedContainerIdentifier copy];
+    copy->_TLSMinimumSupportedProtocolVersion = _TLSMinimumSupportedProtocolVersion;
+    copy->_TLSMaximumSupportedProtocolVersion = _TLSMaximumSupportedProtocolVersion;
     return copy;
 }
 

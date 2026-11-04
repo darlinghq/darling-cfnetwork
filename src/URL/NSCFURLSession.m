@@ -13,11 +13,14 @@
 #import "NSCFURLSession.h"
 #import "NSURLSessionCurl.h"
 #import "NSURLRequestInternal.h"
+#import <CFNetwork/CFNSURLConnection.h>
 
 #import <Foundation/NSArray.h>
 #import <Foundation/NSBundle.h>
 #import <Foundation/NSCharacterSet.h>
 #import <Foundation/NSData.h>
+#import <Foundation/NSDate.h>
+#import <Foundation/NSDateInterval.h>
 #import <Foundation/NSDictionary.h>
 #import <Foundation/NSError.h>
 #import <Foundation/NSException.h>
@@ -39,6 +42,18 @@
 static const NSUInteger kMaximumRedirects = 20;
 
 typedef void (^DataTaskCompletionHandler)(NSData *data, NSURLResponse *response, NSError *error);
+
+@protocol _NSURLSessionMetricsDelegate
+- (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task didFinishCollectingMetrics:(NSURLSessionTaskMetrics *)metrics;
+@end
+
+// Apple sends the metrics before URLSession:task:didCompleteWithError:, whether or not the task
+// has a completion handler. Alamofire finishes a request only once both have arrived.
+static void deliverMetrics(__NSCFURLSession *session, NSURLSessionTask *task, NSURLSessionTaskMetrics *metrics)
+{
+    id delegate = [session _delegateRespondingTo:@selector(URLSession:task:didFinishCollectingMetrics:)];
+    [(id <_NSURLSessionMetricsDelegate>)delegate URLSession:session task:task didFinishCollectingMetrics:metrics];
+}
 
 @interface __NSCFURLSession ()
 - (NSURLSessionConfiguration *)_configurationNoCopy;
@@ -555,6 +570,8 @@ LOCKED_GETTER(int64_t, countOfBytesExpectedToReceive, _countOfBytesExpectedToRec
         _state = NSURLSessionTaskStateRunning;
         start = !_started;
         _started = YES;
+        if (start)
+            _startTime = CFAbsoluteTimeGetCurrent();
     }
 
     NSString *loadError = nil;
@@ -1187,8 +1204,11 @@ LOCKED_GETTER(int64_t, countOfBytesExpectedToReceive, _countOfBytesExpectedToRec
         data = _receivedData != nil ? [[_receivedData copy] autorelease] : [NSData data];
     NSURLResponse *response = [self response];
     __NSCFURLSession *session = _session;
+    NSURLSessionTaskMetrics *metrics = _metricsReportedByOwner ? nil : [self _metrics];
     [session _addDelegateBlock:^{
         [self retain];
+        if (metrics != nil)
+            deliverMetrics(session, self, metrics);
         if (_completionHandler != nil)
         {
             void (^handler)(NSData *data, NSURLResponse *response, NSError *error) = [[_completionHandler retain] autorelease];
@@ -1204,6 +1224,25 @@ LOCKED_GETTER(int64_t, countOfBytesExpectedToReceive, _countOfBytesExpectedToRec
         [session _taskDidFinish:self];
         [self autorelease];
     }];
+}
+
+- (NSURLSessionTaskMetrics *)_metrics
+{
+    CFAbsoluteTime start, end = CFAbsoluteTimeGetCurrent();
+    NSUInteger redirects;
+    @synchronized(self)
+    {
+        start = _started ? _startTime : end;
+        redirects = _redirectCount;
+    }
+    NSDateInterval *interval = [[[NSDateInterval alloc] initWithStartDate:[NSDate dateWithTimeIntervalSinceReferenceDate:start]
+                                                                   endDate:[NSDate dateWithTimeIntervalSinceReferenceDate:end]] autorelease];
+    return [[[NSURLSessionTaskMetrics alloc] _initWithTaskInterval:interval redirectCount:redirects] autorelease];
+}
+
+- (void)_setMetricsReportedByOwner
+{
+    _metricsReportedByOwner = YES;
 }
 
 @end
@@ -1226,6 +1265,7 @@ LOCKED_GETTER(int64_t, countOfBytesExpectedToReceive, _countOfBytesExpectedToRec
             [self _handleInnerCompletionWithData:data response:response error:error];
             [self autorelease];
         }] retain];
+        [(__NSCFURLSessionDataTask *)_innerTask _setMetricsReportedByOwner];
     }
     return self;
 }
@@ -1249,6 +1289,7 @@ LOCKED_GETTER(int64_t, countOfBytesExpectedToReceive, _countOfBytesExpectedToRec
     }
 
     __NSCFURLSession *session = _session;
+    deliverMetrics(session, self, [(__NSCFURLSessionDataTask *)_innerTask _metrics]);
     if (_completionHandler != nil) {
         DownloadTaskCompletionHandler handler = [[_completionHandler retain] autorelease];
         [_completionHandler release];

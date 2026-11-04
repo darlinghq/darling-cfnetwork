@@ -2,7 +2,7 @@
 #import <Foundation/NSURLSession.h>
 #import <dispatch/dispatch.h>
 
-@class NSOperationQueue, NSString, NSMutableSet, NSMutableData, NSMutableArray, NSLock, NSHTTPURLResponse;
+@class NSURLSessionTaskMetrics, NSOperationQueue, NSString, NSMutableSet, NSMutableData, NSMutableArray, NSLock, NSHTTPURLResponse;
 
 // Concrete classes behind the abstract NSURLSession API. Instance variables
 // live in these @interfaces so that the i386 (fragile ABI) build can lay them out.
@@ -29,6 +29,15 @@ __attribute__((visibility("hidden")))
     NSURLCredentialStorage *_URLCredentialStorage;
     NSURLCache *_URLCache;
     NSArray *_protocolClasses;
+    BOOL _waitsForConnectivity;
+    BOOL _allowsExpensiveNetworkAccess;
+    BOOL _allowsConstrainedNetworkAccess;
+    BOOL _requiresDNSSECValidation;
+    NSURLSessionMultipathServiceType _multipathServiceType;
+    BOOL _shouldUseExtendedBackgroundIdleMode;
+    NSString *_sharedContainerIdentifier;
+    uint16_t _TLSMinimumSupportedProtocolVersion;
+    uint16_t _TLSMaximumSupportedProtocolVersion;
 }
 @end
 
@@ -82,7 +91,9 @@ __attribute__((visibility("hidden")))
     NSHTTPURLResponse *_redirectResponse;
     NSUInteger _redirectCount;
     CFAbsoluteTime _resourceDeadline;
+    CFAbsoluteTime _startTime;
     BOOL _started;
+    BOOL _metricsReportedByOwner;
     BOOL _finished;
     BOOL _awaitingDisposition;
     BOOL _writePaused;
@@ -91,6 +102,11 @@ __attribute__((visibility("hidden")))
 }
 
 - (id)_initWithSession:(__NSCFURLSession *)session request:(NSURLRequest *)request identifier:(NSUInteger)identifier completionHandler:(void (^)(NSData *data, NSURLResponse *response, NSError *error))completionHandler;
+
+// Metrics of the finished transfer; a task wrapping this one (a download task) reports them
+// as its own instead of this task reporting them to the delegate.
+- (NSURLSessionTaskMetrics *)_metrics;
+- (void)_setMetricsReportedByOwner;
 
 @end
 
