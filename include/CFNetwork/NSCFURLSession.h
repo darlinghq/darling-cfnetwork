@@ -99,6 +99,7 @@ __attribute__((visibility("hidden")))
     BOOL _writePaused;
     BOOL _transferDoneWhileAwaiting;
     int _doneCode;
+    void (^_bodyObserver)(int64_t received, int64_t expected);
 }
 
 - (id)_initWithSession:(__NSCFURLSession *)session request:(NSURLRequest *)request identifier:(NSUInteger)identifier completionHandler:(void (^)(NSData *data, NSURLResponse *response, NSError *error))completionHandler;

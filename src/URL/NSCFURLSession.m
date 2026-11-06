@@ -62,10 +62,7 @@ static void deliverMetrics(__NSCFURLSession *session, NSURLSessionTask *task, NS
 - (void)_taskDidFinish:(NSURLSessionTask *)task;
 @end
 
-@interface __NSCFURLSessionDataTask () <_NSURLSessionCurlTransfer> {
-    /* Told of each piece of body as it arrives, when a download task wraps this one. */
-    void (^_bodyObserver)(int64_t received, int64_t expected);
-}
+@interface __NSCFURLSessionDataTask () <_NSURLSessionCurlTransfer>
 - (void)_setBodyObserver:(void (^)(int64_t received, int64_t expected))observer;
 - (void)_receivedHeaderLine:(const char *)bytes length:(size_t)length;
 - (size_t)_receivedBody:(const char *)bytes length:(size_t)length;
@@ -1038,21 +1035,32 @@ LOCKED_GETTER(int64_t, countOfBytesExpectedToReceive, _countOfBytesExpectedToRec
 
 - (void)_setBodyObserver:(void (^)(int64_t received, int64_t expected))observer
 {
-    [_bodyObserver release];
-    _bodyObserver = [observer copy];
+    void (^old)(int64_t, int64_t);
+    void (^newCopy)(int64_t, int64_t) = [observer copy];
+    @synchronized(self)
+    {
+        old = _bodyObserver;
+        _bodyObserver = newCopy;
+    }
+    [old release];
 }
 
 - (void)_deliverData:(NSData *)data
 {
     int64_t received, expected;
+    void (^observer)(int64_t, int64_t) = nil;
     @synchronized(self)
     {
         _countOfBytesReceived += [data length];
         received = _countOfBytesReceived;
         expected = _countOfBytesExpectedToReceive;
+        observer = [_bodyObserver retain];
     }
-    if (_bodyObserver != nil)
-        _bodyObserver(received, expected);
+    if (observer != nil)
+    {
+        observer(received, expected);
+        [observer release];
+    }
     if (_completionHandler != nil)
     {
         if (_receivedData == nil)
