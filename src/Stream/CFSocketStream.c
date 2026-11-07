@@ -68,6 +68,8 @@
 const int kCFStreamErrorDomainSOCKS = 5;	/* On Mach this lives in CF for historical reasons, even though it is declared in CFNetwork */
 #endif
 
+const int kCFStreamErrorDomainWinSock = 12;
+
 
 #if 0
 #pragma mark *Constant Strings

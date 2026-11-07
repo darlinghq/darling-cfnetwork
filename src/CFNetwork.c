@@ -54,6 +54,15 @@
 const CFStringRef kCFErrorDomainCFNetwork = CFSTR("com.apple.cfnetwork");
 const CFStringRef kCFErrorDomainWinSock = CFSTR("com.windows.sock");
 
+const CFStringRef kCFURLErrorFailingURLErrorKey = CFSTR("NSErrorFailingURLKey");
+const CFStringRef kCFURLErrorFailingURLStringErrorKey = CFSTR("NSErrorFailingURLStringKey");
+const CFStringRef kCFGetAddrInfoFailureKey = CFSTR("kCFGetAddrInfoFailureKey");
+const CFStringRef kCFSOCKSStatusCodeKey = CFSTR("kCFSOCKSStatusCodeKey");
+const CFStringRef kCFSOCKSVersionKey = CFSTR("kCFSOCKSVersionKey");
+const CFStringRef kCFSOCKSNegotiationMethodKey = CFSTR("kCFSOCKSNegotiationMethodKey");
+const CFStringRef kCFDNSServiceFailureKey = CFSTR("kCFDNSServiceFailureKey");
+const CFStringRef kCFFTPStatusCodeKey = CFSTR("kCFFTPStatusCodeKey");
+
 #if defined(__MACH__)
 
 /* extern*/ void*

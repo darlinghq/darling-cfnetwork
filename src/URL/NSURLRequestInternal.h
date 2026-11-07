@@ -2,6 +2,7 @@
 #import <CFNetwork/CFURLRequest.h>
 
 @interface NSURLRequest ()
++ (NSTimeInterval)defaultTimeoutInterval;
 - (id)_initWithCFURLRequest:(CFURLRequestRef)req;
 - (CFURLRequestRef)_CFURLRequest;
 @end

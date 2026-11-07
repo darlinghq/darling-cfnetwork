@@ -12,6 +12,8 @@
 #include <CoreFoundation/CFNumber.h>
 #include <dispatch/dispatch.h>
 #include <stdlib.h>
+#include <string.h>
+#include <strings.h>
 #include <libkern/OSAtomic.h>
 #include "CFRuntime.h"
 #include "CFMiscUtils.h"
@@ -191,11 +193,16 @@ CFURLResponseRef CFURLResponseCreateWithCFHTTPMessage(CFAllocatorRef allocator,
         &response->mimeType,
         (CFStringRef)CFDictionaryGetValue(response->headerFields, CFSTR("Content-Type")));
 
+    // -1 is NSURLResponseUnknownLength.
+    response->expectedLength = -1;
     CFStringRef content_length = (CFStringRef)CFDictionaryGetValue(response->headerFields, CFSTR("Content-Length"));
-    if (content_length != NULL) {
-        response->expectedLength = CFStringGetIntValue(content_length);
-    } else {
-        response->expectedLength = 0;
+    char length_text[32];
+    if (content_length != NULL && CFStringGetCString(content_length, length_text, sizeof(length_text), kCFStringEncodingASCII)) {
+        char *end;
+        long long length = strtoll(length_text, &end, 10);
+        if (end != length_text && *end == '\0' && length >= 0) {
+            response->expectedLength = length;
+        }
     }
 
     response->statusCode = CFHTTPMessageGetResponseStatusCode(responseMessage);
@@ -228,9 +235,104 @@ int64_t CFURLResponseGetExpectedContentLength(CFURLResponseRef response) {
     return response->expectedLength;
 }
 
+/* The file name a Content-Disposition header gives (RFC 6266): filename*= (RFC 5987, percent-encoded
+   UTF-8) wins over filename=, quoted or not. Only its last path component is kept. */
+static CFStringRef copyContentDispositionFilename(CFStringRef header) {
+    char buf[1024];
+    if (!CFStringGetCString(header, buf, sizeof(buf), kCFStringEncodingUTF8)) {
+        return NULL;
+    }
+    char name[1024];
+    CFStringRef result = NULL;
+    for (int extended = 1; extended >= 0 && result == NULL; extended--) {
+        const char *key = extended ? "filename*=" : "filename=";
+        size_t keyLength = strlen(key);
+        const char *p = buf;
+        /* A parameter starts the header or follows a ';' and spaces. */
+        while (*p != '\0') {
+            const char *start = p;
+            while (start > buf && (start[-1] == ' ' || start[-1] == '\t')) {
+                start--;
+            }
+            if ((start == buf || start[-1] == ';') && strncasecmp(p, key, keyLength) == 0) {
+                break;
+            }
+            p++;
+        }
+        if (*p == '\0') {
+            continue;
+        }
+        p += keyLength;
+        size_t n = 0;
+        if (*p == '"') {
+            for (p++; *p != '\0' && *p != '"' && n < sizeof(name) - 1; p++) {
+                if (*p == '\\' && p[1] != '\0') {
+                    p++;
+                }
+                name[n++] = *p;
+            }
+        } else {
+            for (; *p != '\0' && *p != ';' && *p != ' ' && *p != '\t' && n < sizeof(name) - 1; p++) {
+                name[n++] = *p;
+            }
+        }
+        name[n] = '\0';
+        const char *value = name;
+        if (extended) {
+            /* charset'language'value */
+            const char *quote = strchr(name, '\'');
+            const char *second = quote != NULL ? strchr(quote + 1, '\'') : NULL;
+            if (second == NULL) {
+                continue;
+            }
+            value = second + 1;
+            CFStringRef encoded = CFStringCreateWithCString(kCFAllocatorDefault, value, kCFStringEncodingUTF8);
+            if (encoded != NULL) {
+                result = CFURLCreateStringByReplacingPercentEscapes(kCFAllocatorDefault, encoded, CFSTR(""));
+                CFRelease(encoded);
+            }
+        } else {
+            result = CFStringCreateWithCString(kCFAllocatorDefault, value, kCFStringEncodingUTF8);
+            if (result == NULL) {
+                result = CFStringCreateWithCString(kCFAllocatorDefault, value, kCFStringEncodingISOLatin1);
+            }
+        }
+    }
+    if (result == NULL) {
+        return NULL;
+    }
+    /* No directories: keep what follows the last slash. */
+    CFIndex length = CFStringGetLength(result);
+    CFIndex start = 0;
+    for (CFIndex i = 0; i < length; i++) {
+        UniChar c = CFStringGetCharacterAtIndex(result, i);
+        if (c == '/' || c == '\\') {
+            start = i + 1;
+        }
+    }
+    if (start >= length) {
+        CFRelease(result);
+        return NULL;
+    }
+    if (start > 0) {
+        CFStringRef last = CFStringCreateWithSubstring(kCFAllocatorDefault, result, CFRangeMake(start, length - start));
+        CFRelease(result);
+        result = last;
+    }
+    return result;
+}
+
 CFStringRef CFURLResponseCopySuggestedFilename(CFURLResponseRef response) {
     if (response->url == NULL) {
         return NULL;
+    }
+    CFStringRef disposition = response->headerFields != NULL
+        ? CFDictionaryGetValue(response->headerFields, CFSTR("Content-Disposition")) : NULL;
+    if (disposition != NULL && CFGetTypeID(disposition) == CFStringGetTypeID()) {
+        CFStringRef name = copyContentDispositionFilename(disposition);
+        if (name != NULL) {
+            return name;
+        }
     }
     CFStringRef str = CFURLCopyLastPathComponent(response->url);
     if (str == NULL || CFStringGetLength(str) == 0) {
