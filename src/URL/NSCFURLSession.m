@@ -794,6 +794,16 @@ LOCKED_GETTER(int64_t, countOfBytesExpectedToReceive, _countOfBytesExpectedToRec
     curl->easy_setopt(easy, CURLOPT_WRITEFUNCTION, writeCallback);
     curl->easy_setopt(easy, CURLOPT_WRITEDATA, self);
 
+    // libcurl's TLS backend decides server trust, using libcurl's CA bundle
+    // (/etc/ssl/cert.pem) as the only anchors; SecTrust, the keychain and
+    // its trust settings are not consulted. Verification is libcurl's
+    // default, and is set here too so that it stays on. A server that fails
+    // it ends the task with NSURLErrorServerCertificateUntrusted. Without a
+    // SecTrustRef for the connection, delegates are not offered
+    // NSURLAuthenticationMethodServerTrust challenges.
+    curl->easy_setopt(easy, CURLOPT_SSL_VERIFYPEER, 1L);
+    curl->easy_setopt(easy, CURLOPT_SSL_VERIFYHOST, 2L);
+
     NSString *method = [[request HTTPMethod] uppercaseString];
     NSData *body = [request HTTPBody];
     if ([body length] != 0)
