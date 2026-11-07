@@ -48,7 +48,7 @@ typedef void (^DataTaskCompletionHandler)(NSData *data, NSURLResponse *response,
 @end
 
 // Apple sends the metrics before URLSession:task:didCompleteWithError:, whether or not the task
-// has a completion handler. Alamofire finishes a request only once both have arrived.
+// has a completion handler. Delegates may wait for both before treating a task as finished.
 static void deliverMetrics(__NSCFURLSession *session, NSURLSessionTask *task, NSURLSessionTaskMetrics *metrics)
 {
     id delegate = [session _delegateRespondingTo:@selector(URLSession:task:didFinishCollectingMetrics:)];
@@ -1290,8 +1290,8 @@ LOCKED_GETTER(int64_t, countOfBytesExpectedToReceive, _countOfBytesExpectedToRec
             [self autorelease];
         }] retain];
         [(__NSCFURLSessionDataTask *)_innerTask _setMetricsReportedByOwner];
-        /* The delegate hears how far the download is (Feather's progress ring); at most
-           ten times a second, and always the last piece. */
+        /* The delegate hears how far the download is; at most ten times a second, and
+           always the last piece. */
         if (_completionHandler == nil) {
             __block int64_t reported = 0;
             __block CFAbsoluteTime reportedAt = 0;
