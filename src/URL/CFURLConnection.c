@@ -320,14 +320,17 @@ static void openConnection(struct _CFURLConnection * connection) {
     if (replayCached(connection)) {
         return;
     }
-    CFDictionaryRef cookiesHeaderFields = CFHTTPCookieStorageCopyRequestHeaderFieldsForURL(CFHTTPCookieStorageGetDefault(), CFURLRequestGetURL(connection->request));
+    CFDictionaryRef cookiesHeaderFields = CFURLRequestShouldHandleCookes(connection->request)
+        ? CFHTTPCookieStorageCopyRequestHeaderFieldsForURL(CFHTTPCookieStorageGetDefault(), CFURLRequestGetURL(connection->request))
+        : NULL;
     if (cookiesHeaderFields != NULL) {
         CFMutableURLRequestRef alteredRequest = CFURLRequestCreateMutableCopy(kCFAllocatorDefault, connection->request);
         CFURLRequestAddValueForHTTPField(alteredRequest, CFSTR("Cookie"), CFDictionaryGetValue(cookiesHeaderFields, CFSTR("Cookie")));
         CFRelease(connection->request);
         connection->request = alteredRequest;
         CFHTTPMessageSetHeaderFieldValue(connection->message, CFSTR("Cookie"), CFDictionaryGetValue(cookiesHeaderFields, CFSTR("Cookie")));
-    };
+        CFRelease(cookiesHeaderFields);
+    }
 
     connection->streamValid = true;
     connection->valid = true;
@@ -495,7 +498,13 @@ static void readStreamEvent(CFReadStreamRef stream, CFStreamEventType type, void
         if (message != NULL && CFHTTPMessageIsHeaderComplete(message)) {
             CFURLRef finalUrl = CFReadStreamCopyProperty(stream, kCFStreamPropertyHTTPFinalURL);
             CFURLResponseRef response = CFURLResponseCreateWithCFHTTPMessage(kCFAllocatorDefault, finalUrl, message);
-            CFHTTPCookieStorageSetCookiesWithResponseHeaderFields(CFHTTPCookieStorageGetDefault(), CFURLResponseGetHeaderFields(response), finalUrl);
+            if (CFURLRequestShouldHandleCookes(connection->request)) {
+                CFURLRef mainDocumentURL = CFURLRequestCopyMainDocumentURL(connection->request);
+                CFHTTPCookieStorageSetCookiesWithResponseHeaderFieldsForMainDocument(CFHTTPCookieStorageGetDefault(), CFURLResponseGetHeaderFields(response), finalUrl, mainDocumentURL);
+                if (mainDocumentURL != NULL) {
+                    CFRelease(mainDocumentURL);
+                }
+            }
 
             UInt32 statusCode = CFHTTPMessageGetResponseStatusCode(message);
 
