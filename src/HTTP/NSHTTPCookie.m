@@ -171,7 +171,17 @@ NSString * const NSHTTPCookiePort = @"Port";
 }
 
 - (BOOL)isEqual:(id)object {
+    if (object == self) {
+        return YES;
+    }
+    if (![object isKindOfClass:[NSHTTPCookie class]]) {
+        return NO;
+    }
     return [[self properties] isEqual:[object properties]];
+}
+
+- (NSUInteger)hash {
+    return [[self name] hash] ^ [[self domain] hash] ^ [[self path] hash];
 }
 
 
