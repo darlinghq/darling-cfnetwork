@@ -8,6 +8,11 @@
 #import "NSURLResponseInternal.h"
 #import <Foundation/NSString.h>
 #import <Foundation/NSDictionary.h>
+#import <Foundation/NSCoder.h>
+#import <Foundation/NSException.h>
+#import <Foundation/NSKeyedArchiver.h>
+#import <Foundation/NSSet.h>
+#import <Foundation/NSURL.h>
 
 @implementation NSURLResponseInternal
 
@@ -55,19 +60,55 @@
 }
 
 
+// Keyed coding of the URL, MIME type, expected content length and text
+// encoding name. Decodes are class-checked, so a response can be unarchived
+// with secure coding required.
++ (BOOL)supportsSecureCoding
+{
+    return YES;
+}
+
 - (id)initWithCoder:(NSCoder *)coder
 {
-    self = [super init];
-    if (self)
+    if (![coder allowsKeyedCoding])
     {
-
+        [self release];
+        return nil;
     }
-    return self;
+    NSURL *url = [coder decodeObjectOfClass:[NSURL class] forKey:@"NS.url"];
+    NSString *MIMEType = [coder decodeObjectOfClass:[NSString class] forKey:@"NS.MIMEType"];
+    NSString *encoding = [coder decodeObjectOfClass:[NSString class] forKey:@"NS.textEncodingName"];
+    // An object that is archived but of an unexpected class decodes to nil.
+    if (([coder containsValueForKey:@"NS.url"] && url == nil) ||
+        ([coder containsValueForKey:@"NS.MIMEType"] && MIMEType == nil) ||
+        ([coder containsValueForKey:@"NS.textEncodingName"] && encoding == nil))
+    {
+        [self release];
+        return nil;
+    }
+    long long length = [coder containsValueForKey:@"NS.expectedContentLength"] ? [coder decodeInt64ForKey:@"NS.expectedContentLength"] : -1;
+    return [self initWithURL:url MIMEType:MIMEType expectedContentLength:(NSInteger)length textEncodingName:encoding];
 }
 
 - (void)encodeWithCoder:(NSCoder *)coder
 {
-
+    if (![coder allowsKeyedCoding])
+    {
+        [NSException raise:NSInvalidArchiveOperationException format:@"NSURLResponse can only be encoded by a keyed archiver."];
+    }
+    if ([self URL] != nil)
+    {
+        [coder encodeObject:[self URL] forKey:@"NS.url"];
+    }
+    if ([self MIMEType] != nil)
+    {
+        [coder encodeObject:[self MIMEType] forKey:@"NS.MIMEType"];
+    }
+    [coder encodeInt64:(int64_t)[self expectedContentLength] forKey:@"NS.expectedContentLength"];
+    if ([self textEncodingName] != nil)
+    {
+        [coder encodeObject:[self textEncodingName] forKey:@"NS.textEncodingName"];
+    }
 }
 
 - (id)_initWithCFURLResponse:(CFURLResponseRef)response
@@ -175,19 +216,44 @@ static inline NSString *NSURLLocalizedString(NSString *key)
     }
 }
 
-+ (BOOL)supportsSecureCoding
+// In addition to the NSURLResponse fields, the status code and the header
+// fields are archived; the MIME type, length and encoding are derived from
+// the headers again when decoding.
+- (void)encodeWithCoder:(NSCoder *)coder
 {
-    return YES;
+    [super encodeWithCoder:coder];
+    [coder encodeInteger:[self statusCode] forKey:@"NS.statusCode"];
+    if ([self allHeaderFields] != nil)
+    {
+        [coder encodeObject:[self allHeaderFields] forKey:@"NS.headerFields"];
+    }
 }
 
 - (id)initWithCoder:(NSCoder *)coder
 {
-    self = [super initWithCoder:coder];
-    if (self)
+    if (![coder allowsKeyedCoding])
     {
-
+        [self release];
+        return nil;
     }
-    return self;
+    NSURL *url = [coder decodeObjectOfClass:[NSURL class] forKey:@"NS.url"];
+    NSDictionary *fields = [coder decodeObjectOfClasses:[NSSet setWithObjects:[NSDictionary class], [NSString class], nil] forKey:@"NS.headerFields"];
+    if (([coder containsValueForKey:@"NS.url"] && url == nil) ||
+        ([coder containsValueForKey:@"NS.headerFields"] && fields == nil) ||
+        ![coder containsValueForKey:@"NS.statusCode"])
+    {
+        [self release];
+        return nil;
+    }
+    for (id key in fields)
+    {
+        if (![key isKindOfClass:[NSString class]] || ![[fields objectForKey:key] isKindOfClass:[NSString class]])
+        {
+            [self release];
+            return nil;
+        }
+    }
+    return [self initWithURL:url statusCode:[coder decodeIntegerForKey:@"NS.statusCode"] HTTPVersion:(NSString *)kCFHTTPVersion1_1 headerFields:fields];
 }
 
 - (id)initWithURL:(NSURL *)URL statusCode:(NSInteger)statusCode HTTPVersion:(NSString *)version headerFields:(NSDictionary *)fields
