@@ -10,6 +10,11 @@
 #import <Foundation/NSURL.h>
 #import <Foundation/NSDictionary.h>
 #import <Foundation/NSArray.h>
+#import <Foundation/NSCoder.h>
+#import <Foundation/NSData.h>
+#import <Foundation/NSException.h>
+#import <Foundation/NSKeyedArchiver.h>
+#import <Foundation/NSSet.h>
 
 @implementation NSURLRequestInternal
 
@@ -109,6 +114,144 @@ static NSTimeInterval defaultTimeout = 60.0;
 - (BOOL)allowsCellularAccess
 {
     return CFURLRequestAllowsCellularAccess(_internal->request);
+}
+
+// Keyed coding. The archive holds the URL, cache policy, timeout, main document
+// URL, network service type, cellular access, and the HTTP method, header
+// fields, body and the cookie and pipelining flags. An HTTP body stream is not
+// archived (it cannot be). All decodes are class-checked, so the request can
+// be unarchived with secure coding required.
++ (BOOL)supportsSecureCoding
+{
+    return YES;
+}
+
+- (void)encodeWithCoder:(NSCoder *)coder
+{
+    if (![coder allowsKeyedCoding])
+    {
+        [NSException raise:NSInvalidArchiveOperationException format:@"NSURLRequest can only be encoded by a keyed archiver."];
+    }
+    if ([self URL] != nil)
+    {
+        [coder encodeObject:[self URL] forKey:@"NS.url"];
+    }
+    [coder encodeInteger:[self cachePolicy] forKey:@"NS.cachePolicy"];
+    [coder encodeDouble:[self timeoutInterval] forKey:@"NS.timeout"];
+    if ([self mainDocumentURL] != nil)
+    {
+        [coder encodeObject:[self mainDocumentURL] forKey:@"NS.mainDocumentURL"];
+    }
+    [coder encodeInteger:[self networkServiceType] forKey:@"NS.networkServiceType"];
+    [coder encodeBool:[self allowsCellularAccess] forKey:@"NS.allowsCellularAccess"];
+    if ([self HTTPMethod] != nil)
+    {
+        [coder encodeObject:[self HTTPMethod] forKey:@"NS.HTTPMethod"];
+    }
+    if ([self allHTTPHeaderFields] != nil)
+    {
+        [coder encodeObject:[self allHTTPHeaderFields] forKey:@"NS.HTTPHeaders"];
+    }
+    if ([self HTTPBody] != nil)
+    {
+        [coder encodeObject:[self HTTPBody] forKey:@"NS.HTTPBody"];
+    }
+    [coder encodeBool:[self HTTPShouldHandleCookies] forKey:@"NS.HTTPShouldHandleCookies"];
+    [coder encodeBool:[self HTTPShouldUsePipelining] forKey:@"NS.HTTPShouldUsePipelining"];
+}
+
+- (id)initWithCoder:(NSCoder *)coder
+{
+    if (![coder allowsKeyedCoding])
+    {
+        [self release];
+        return nil;
+    }
+
+    NSURL *url = [coder decodeObjectOfClass:[NSURL class] forKey:@"NS.url"];
+    NSURL *mainDocumentURL = [coder decodeObjectOfClass:[NSURL class] forKey:@"NS.mainDocumentURL"];
+    NSString *method = [coder decodeObjectOfClass:[NSString class] forKey:@"NS.HTTPMethod"];
+    NSData *body = [coder decodeObjectOfClass:[NSData class] forKey:@"NS.HTTPBody"];
+    NSDictionary *headers = [coder decodeObjectOfClasses:[NSSet setWithObjects:[NSDictionary class], [NSString class], nil] forKey:@"NS.HTTPHeaders"];
+    // An object that is archived but of an unexpected class decodes to nil.
+    if (([coder containsValueForKey:@"NS.url"] && url == nil) ||
+        ([coder containsValueForKey:@"NS.mainDocumentURL"] && mainDocumentURL == nil) ||
+        ([coder containsValueForKey:@"NS.HTTPMethod"] && method == nil) ||
+        ([coder containsValueForKey:@"NS.HTTPBody"] && body == nil) ||
+        ([coder containsValueForKey:@"NS.HTTPHeaders"] && headers == nil))
+    {
+        [self release];
+        return nil;
+    }
+    for (id key in headers)
+    {
+        if (![key isKindOfClass:[NSString class]] || ![[headers objectForKey:key] isKindOfClass:[NSString class]])
+        {
+            [self release];
+            return nil;
+        }
+    }
+
+    NSURLRequestCachePolicy policy = NSURLRequestUseProtocolCachePolicy;
+    if ([coder containsValueForKey:@"NS.cachePolicy"])
+    {
+        policy = (NSURLRequestCachePolicy)[coder decodeIntegerForKey:@"NS.cachePolicy"];
+    }
+    NSTimeInterval timeout = [NSURLRequest defaultTimeoutInterval];
+    if ([coder containsValueForKey:@"NS.timeout"])
+    {
+        timeout = [coder decodeDoubleForKey:@"NS.timeout"];
+    }
+
+    self = [self initWithURL:url cachePolicy:policy timeoutInterval:timeout];
+    if (self == nil)
+    {
+        return nil;
+    }
+
+    // The initializer above returns an immutable or mutable request according to the class
+    // being decoded; fill in the rest through a mutable working copy.
+    CFMutableURLRequestRef request = CFURLRequestCreateMutableCopy(kCFAllocatorDefault, _internal->request);
+    CFURLRequestSetMainDocumentURL(request, (CFURLRef)mainDocumentURL);
+    if ([coder containsValueForKey:@"NS.networkServiceType"])
+    {
+        CFURLRequestSetNetworkServiceType(request, (CFURLRequestNetworkServiceType)[coder decodeIntegerForKey:@"NS.networkServiceType"]);
+    }
+    if ([coder containsValueForKey:@"NS.allowsCellularAccess"])
+    {
+        CFURLRequestSetAllowsCellularAccess(request, [coder decodeBoolForKey:@"NS.allowsCellularAccess"]);
+    }
+    if (method != nil)
+    {
+        CFURLRequestSetHTTPMethod(request, (CFStringRef)method);
+    }
+    if (headers != nil)
+    {
+        CFURLRequestSetHTTPFields(request, (CFArrayRef)[headers allKeys], (CFArrayRef)[headers allValues]);
+    }
+    if (body != nil)
+    {
+        CFURLRequestSetHTTPBody(request, (CFDataRef)body);
+    }
+    if ([coder containsValueForKey:@"NS.HTTPShouldHandleCookies"])
+    {
+        CFURLRequestHandleCookies(request, [coder decodeBoolForKey:@"NS.HTTPShouldHandleCookies"]);
+    }
+    if ([coder containsValueForKey:@"NS.HTTPShouldUsePipelining"])
+    {
+        CFURLRequestUseHTTPPipelining(request, [coder decodeBoolForKey:@"NS.HTTPShouldUsePipelining"]);
+    }
+    CFRelease(_internal->request);
+    if ([self isKindOfClass:[NSMutableURLRequest class]])
+    {
+        _internal->request = request;
+    }
+    else
+    {
+        _internal->request = CFURLRequestCreateCopy(kCFAllocatorDefault, request);
+        CFRelease(request);
+    }
+    return self;
 }
 
 - (CFURLRequestRef)_CFURLRequest
