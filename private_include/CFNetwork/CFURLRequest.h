@@ -48,6 +48,8 @@ CFTimeInterval CFURLRequestGetTimeout(CFURLRequestRef request);
 CFURLRef CFURLRequestCopyMainDocumentURL(CFURLRequestRef request);
 CFURLRequestNetworkServiceType CFURLRequestGetServiceType(CFURLRequestRef request);
 Boolean CFURLRequestAllowsCellularAccess(CFURLRequestRef request);
+Boolean CFURLRequestAllowsExpensiveNetworkAccess(CFURLRequestRef request);
+Boolean CFURLRequestAllowsConstrainedNetworkAccess(CFURLRequestRef request);
 CFStringRef CFURLRequestCopyHTTPMethod(CFURLRequestRef request);
 CFStringRef CFURLRequestCopyHTTPVersion(CFURLRequestRef request);
 CFStringRef CFURLRequestCopyValueForHTTPField(CFURLRequestRef request, CFStringRef field);
@@ -70,6 +72,8 @@ Boolean CFURLRequestSetTimeout(CFMutableURLRequestRef request, CFTimeInterval ti
 Boolean CFURLRequestSetMainDocumentURL(CFMutableURLRequestRef request, CFURLRef url);
 Boolean CFURLRequestSetNetworkServiceType(CFMutableURLRequestRef request, CFURLRequestNetworkServiceType type);
 Boolean CFURLRequestSetAllowsCellularAccess(CFMutableURLRequestRef request, Boolean allowed);
+Boolean CFURLRequestSetAllowsExpensiveNetworkAccess(CFMutableURLRequestRef request, Boolean allowed);
+Boolean CFURLRequestSetAllowsConstrainedNetworkAccess(CFMutableURLRequestRef request, Boolean allowed);
 Boolean CFURLRequestSetHTTPMethod(CFMutableURLRequestRef request, CFStringRef method);
 CFIndex CFURLRequestAddValueForHTTPField(CFMutableURLRequestRef request, CFStringRef field, CFStringRef value);
 Boolean CFURLRequestSetHTTPFields(CFMutableURLRequestRef request, CFArrayRef keys, CFArrayRef values);

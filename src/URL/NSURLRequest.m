@@ -116,6 +116,16 @@ static NSTimeInterval defaultTimeout = 60.0;
     return CFURLRequestAllowsCellularAccess(_internal->request);
 }
 
+- (BOOL)allowsExpensiveNetworkAccess
+{
+    return CFURLRequestAllowsExpensiveNetworkAccess(_internal->request);
+}
+
+- (BOOL)allowsConstrainedNetworkAccess
+{
+    return CFURLRequestAllowsConstrainedNetworkAccess(_internal->request);
+}
+
 // Keyed coding. The archive holds the URL, cache policy, timeout, main document
 // URL, network service type, cellular access, and the HTTP method, header
 // fields, body and the cookie and pipelining flags. An HTTP body stream is not
@@ -144,6 +154,8 @@ static NSTimeInterval defaultTimeout = 60.0;
     }
     [coder encodeInteger:[self networkServiceType] forKey:@"NS.networkServiceType"];
     [coder encodeBool:[self allowsCellularAccess] forKey:@"NS.allowsCellularAccess"];
+    [coder encodeBool:[self allowsExpensiveNetworkAccess] forKey:@"NS.allowsExpensiveNetworkAccess"];
+    [coder encodeBool:[self allowsConstrainedNetworkAccess] forKey:@"NS.allowsConstrainedNetworkAccess"];
     if ([self HTTPMethod] != nil)
     {
         [coder encodeObject:[self HTTPMethod] forKey:@"NS.HTTPMethod"];
@@ -220,6 +232,14 @@ static NSTimeInterval defaultTimeout = 60.0;
     if ([coder containsValueForKey:@"NS.allowsCellularAccess"])
     {
         CFURLRequestSetAllowsCellularAccess(request, [coder decodeBoolForKey:@"NS.allowsCellularAccess"]);
+    }
+    if ([coder containsValueForKey:@"NS.allowsExpensiveNetworkAccess"])
+    {
+        CFURLRequestSetAllowsExpensiveNetworkAccess(request, [coder decodeBoolForKey:@"NS.allowsExpensiveNetworkAccess"]);
+    }
+    if ([coder containsValueForKey:@"NS.allowsConstrainedNetworkAccess"])
+    {
+        CFURLRequestSetAllowsConstrainedNetworkAccess(request, [coder decodeBoolForKey:@"NS.allowsConstrainedNetworkAccess"]);
     }
     if (method != nil)
     {
@@ -361,6 +381,16 @@ static NSTimeInterval defaultTimeout = 60.0;
 - (void)setAllowsCellularAccess:(BOOL)allow
 {
     CFURLRequestSetAllowsCellularAccess((CFMutableURLRequestRef)[self _CFURLRequest], allow);
+}
+
+- (void)setAllowsExpensiveNetworkAccess:(BOOL)allow
+{
+    CFURLRequestSetAllowsExpensiveNetworkAccess((CFMutableURLRequestRef)[self _CFURLRequest], allow);
+}
+
+- (void)setAllowsConstrainedNetworkAccess:(BOOL)allow
+{
+    CFURLRequestSetAllowsConstrainedNetworkAccess((CFMutableURLRequestRef)[self _CFURLRequest], allow);
 }
 
 @end
