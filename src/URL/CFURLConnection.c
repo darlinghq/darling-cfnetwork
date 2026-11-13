@@ -435,21 +435,24 @@ static void connectionDecodeData(struct _CFURLConnection *connection, CFDataRef 
     CFMutableDataRef outputData = CFDataCreateMutable(kCFAllocatorDefault, 0);
     CFDataIncreaseLength(outputData, length + halfLength);
 
-    z_stream zStream = *connection->zStream;
-    zStream.next_in = (Bytef *)CFDataGetMutableBytePtr((CFMutableDataRef)data);
-    zStream.avail_in = (unsigned int)length;
-    zStream.avail_out = 0;
-    zStream.total_out = 0;
-    while (zStream.avail_in != 0) {
+    /* Inflate with the connection's own stream: its internal state points back at the z_stream it was
+     * initialised in, so zlib refuses a copy, and a copy would lose the state needed for the next chunk. */
+    z_stream *zStream = connection->zStream;
+    zStream->next_in = (Bytef *)CFDataGetMutableBytePtr((CFMutableDataRef)data);
+    zStream->avail_in = (unsigned int)length;
+    zStream->avail_out = 0;
+    zStream->total_out = 0;
+    while (zStream->avail_in != 0) {
 
-        if (zStream.total_out >= CFDataGetLength(outputData)) {
-            CFDataIncreaseLength(outputData, halfLength);
+        if (zStream->total_out >= CFDataGetLength(outputData)) {
+            /* At least one byte: a one-byte chunk has halfLength 0, and inflate() without output space fails. */
+            CFDataIncreaseLength(outputData, halfLength > 0 ? halfLength : 1);
         }
 
-        zStream.next_out = (Bytef *)CFDataGetMutableBytePtr(outputData) + zStream.total_out;
-        zStream.avail_out = (unsigned int)(CFDataGetLength(outputData) - zStream.total_out);
+        zStream->next_out = (Bytef *)CFDataGetMutableBytePtr(outputData) + zStream->total_out;
+        zStream->avail_out = (unsigned int)(CFDataGetLength(outputData) - zStream->total_out);
 
-        status = inflate(&zStream, Z_BLOCK);
+        status = inflate(zStream, Z_BLOCK);
         if (status == Z_STREAM_END) {
             break;
         } else if (status < 0) {
@@ -458,7 +461,7 @@ static void connectionDecodeData(struct _CFURLConnection *connection, CFDataRef 
     }
 
     if (status == Z_OK || status == Z_STREAM_END) {
-        CFDataSetLength(outputData, zStream.total_out);
+        CFDataSetLength(outputData, zStream->total_out);
         connectionGotData(connection, outputData);
     } else {
         CFErrorRef error = CFErrorCreate(kCFAllocatorDefault, ErrorDomain, kCFURLErrorCannotDecodeRawData, nil);
@@ -669,10 +672,13 @@ static void readStreamEvent(CFReadStreamRef stream, CFStreamEventType type, void
             }
 
             if (length) {
-                if (connection->contentEncoding == kContentEncodingNone) {
-                    connectionGotData(connection, data);
-                } else {
+                /* Only gzip and deflate bodies are decoded. Any other Content-Encoding value is delivered
+                 * as received instead of failing the load with kCFURLErrorCannotDecodeRawData. */
+                if (connection->contentEncoding == kContentEncodingGZIP ||
+                    connection->contentEncoding == kContentEncodingDeflate) {
                     connectionDecodeData(connection, data);
+                } else {
+                    connectionGotData(connection, data);
                 }
             }
 
