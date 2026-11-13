@@ -440,10 +440,8 @@ static void connectionDecodeData(struct _CFURLConnection *connection, CFDataRef 
     z_stream *zStream = connection->zStream;
     zStream->next_in = (Bytef *)CFDataGetMutableBytePtr((CFMutableDataRef)data);
     zStream->avail_in = (unsigned int)length;
-    zStream->avail_out = 0;
     zStream->total_out = 0;
-    while (zStream->avail_in != 0) {
-
+    for (;;) {
         if (zStream->total_out >= CFDataGetLength(outputData)) {
             /* At least one byte: a one-byte chunk has halfLength 0, and inflate() without output space fails. */
             CFDataIncreaseLength(outputData, halfLength > 0 ? halfLength : 1);
@@ -453,9 +451,17 @@ static void connectionDecodeData(struct _CFURLConnection *connection, CFDataRef 
         zStream->avail_out = (unsigned int)(CFDataGetLength(outputData) - zStream->total_out);
 
         status = inflate(zStream, Z_BLOCK);
-        if (status == Z_STREAM_END) {
+        if (status == Z_BUF_ERROR && zStream->avail_in == 0) {
+            /* Nothing was left to produce: the previous call filled the buffer exactly. */
+            status = Z_OK;
             break;
-        } else if (status < 0) {
+        }
+        if (status == Z_STREAM_END || status < 0) {
+            break;
+        }
+        /* Done once the chunk is consumed and the output buffer was not filled: otherwise inflate()
+         * may still hold decoded bytes (a long match) that need more output space. */
+        if (zStream->avail_in == 0 && zStream->avail_out != 0) {
             break;
         }
     }
