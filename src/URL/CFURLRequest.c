@@ -42,6 +42,8 @@ struct _CFURLRequest {
     CFTimeInterval _timeout;
 
     Boolean _allowCellularAccess;
+    Boolean _allowsExpensiveNetworkAccess;
+    Boolean _allowsConstrainedNetworkAccess;
     Boolean _shouldHandleCookies;
     Boolean _shouldUseHTTPPipelining;
 
@@ -231,6 +233,8 @@ CFURLRequestRef CFURLRequestCreate(CFAllocatorRef allocator, CFURLRef url, CFURL
     request->_mutable = false;
     request->_serviceType = CFURLNetworkServiceTypeDefault;
     request->_allowCellularAccess = true;
+    request->_allowsExpensiveNetworkAccess = true;
+    request->_allowsConstrainedNetworkAccess = true;
     request->_shouldHandleCookies = true;
     request->_keys = CFArrayCreateMutable(allocator, 0, &kCFTypeArrayCallBacks);
     request->_values = CFArrayCreateMutable(allocator, 0, &kCFTypeArrayCallBacks);
@@ -276,6 +280,14 @@ CFURLRequestNetworkServiceType CFURLRequestGetServiceType(CFURLRequestRef reques
 
 Boolean CFURLRequestAllowsCellularAccess(CFURLRequestRef request) {
     return request->_allowCellularAccess;
+}
+
+Boolean CFURLRequestAllowsExpensiveNetworkAccess(CFURLRequestRef request) {
+    return request->_allowsExpensiveNetworkAccess;
+}
+
+Boolean CFURLRequestAllowsConstrainedNetworkAccess(CFURLRequestRef request) {
+    return request->_allowsConstrainedNetworkAccess;
 }
 
 CFStringRef CFURLRequestCopyHTTPMethod(CFURLRequestRef request) {
@@ -419,6 +431,8 @@ CFMutableURLRequestRef CFURLRequestCreateMutableCopy(CFAllocatorRef allocator, C
     newReq->_timeout = request->_timeout;
 
     newReq->_allowCellularAccess = request->_allowCellularAccess;
+    newReq->_allowsExpensiveNetworkAccess = request->_allowsExpensiveNetworkAccess;
+    newReq->_allowsConstrainedNetworkAccess = request->_allowsConstrainedNetworkAccess;
     newReq->_shouldHandleCookies = request->_shouldHandleCookies;
     newReq->_shouldUseHTTPPipelining = request->_shouldUseHTTPPipelining;
 
@@ -489,6 +503,22 @@ Boolean CFURLRequestSetAllowsCellularAccess(CFMutableURLRequestRef request, Bool
         return false;
     }
     request->_allowCellularAccess = allowed;
+    return true;
+}
+
+Boolean CFURLRequestSetAllowsExpensiveNetworkAccess(CFMutableURLRequestRef request, Boolean allowed) {
+    if (request->_mutable == false) {
+        return false;
+    }
+    request->_allowsExpensiveNetworkAccess = allowed;
+    return true;
+}
+
+Boolean CFURLRequestSetAllowsConstrainedNetworkAccess(CFMutableURLRequestRef request, Boolean allowed) {
+    if (request->_mutable == false) {
+        return false;
+    }
+    request->_allowsConstrainedNetworkAccess = allowed;
     return true;
 }
 
@@ -711,6 +741,11 @@ CFURLRequestRef _CFURLRequestCreateFromParcel(CFAllocatorRef allocator, CFProper
     PARCEL_GET_RETAINED_OBJECT(parcel, CFString, request->_method, "method");
     PARCEL_GET_RETAINED_OBJECT(parcel, CFData, request->_body, "body");
     PARCEL_GET_BOOL(parcel, request->_allowCellularAccess, "allowCellularAccess");
+    // Parcels written before these flags existed lack them; both default to allowed.
+    request->_allowsExpensiveNetworkAccess = true;
+    request->_allowsConstrainedNetworkAccess = true;
+    PARCEL_GET_BOOL(parcel, request->_allowsExpensiveNetworkAccess, "allowsExpensiveNetworkAccess");
+    PARCEL_GET_BOOL(parcel, request->_allowsConstrainedNetworkAccess, "allowsConstrainedNetworkAccess");
     PARCEL_GET_BOOL(parcel, request->_shouldHandleCookies, "shouldHandleCookies");
     PARCEL_GET_BOOL(parcel, request->_shouldUseHTTPPipelining, "shouldUseHTTPPipelining");
     PARCEL_GET_NUMBER(parcel, Double, double, request->_timeout, "timeout");
@@ -752,6 +787,8 @@ CFPropertyListRef _CFURLRequestCreateParcel(CFURLRequestRef request) {
     PARCEL_SET_OBJECT(parcel, request->_values, "values");
     PARCEL_SET_OBJECT(parcel, request->_body, "body");
     PARCEL_SET_BOOL(parcel, request->_allowCellularAccess, "allowCellularAccess");
+    PARCEL_SET_BOOL(parcel, request->_allowsExpensiveNetworkAccess, "allowsExpensiveNetworkAccess");
+    PARCEL_SET_BOOL(parcel, request->_allowsConstrainedNetworkAccess, "allowsConstrainedNetworkAccess");
     PARCEL_SET_BOOL(parcel, request->_shouldHandleCookies, "shouldHandleCookies");
     PARCEL_SET_BOOL(parcel, request->_shouldUseHTTPPipelining, "shouldUseHTTPPipelining");
     PARCEL_SET_NUMBER(parcel, Double, double, request->_timeout, "timeout");
