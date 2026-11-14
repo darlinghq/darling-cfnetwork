@@ -6279,7 +6279,10 @@ _SocketStreamSecuritySetInfo_NoLock(_CFSocketStreamContext* ctxt, CFDictionaryRe
 		
 		/* Figure out the correct security level to set and set it. */
         value = CFDictionaryGetValue(settings, kCFStreamSSLLevel);
-        if ((!value || CFEqual(value, kCFStreamSocketSecurityLevelNegotiatedSSL)) && SSLSetProtocolVersion(security, kTLSProtocol1))
+        /* Negotiated means the highest version both sides support. SSLSetProtocolVersion(kTLSProtocol1)
+         * sets the maximum to TLS 1.0, which current servers refuse, so offer TLS 1.0 up to TLS 1.2. */
+        if ((!value || CFEqual(value, kCFStreamSocketSecurityLevelNegotiatedSSL)) &&
+            (SSLSetProtocolVersionMin(security, kTLSProtocol1) || SSLSetProtocolVersionMax(security, kTLSProtocol12)))
             break;
 
         else if (value) {
