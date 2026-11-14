@@ -102,6 +102,7 @@ set(cfnetwork_sources
 	URL/NSURLSession.m
 	URL/NSCFURLSession.m
 	URL/NSURLSessionCurl.m
+	URL/NSURLSessionCurlErrors.m
 
 	HTTP/NSHTTPCookie.m
 	HTTP/NSHTTPCookieStorage.m

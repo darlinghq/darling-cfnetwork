@@ -12,6 +12,7 @@
 
 #import "NSCFURLSession.h"
 #import "NSURLSessionCurl.h"
+#import "NSURLSessionCurlErrors.h"
 #import "NSURLRequestInternal.h"
 #import <CFNetwork/CFNSURLConnection.h>
 
@@ -371,45 +372,6 @@ static NSString *defaultUserAgent(void)
                  cfnetwork >> 16, (cfnetwork >> 8) & 0xff, cfnetwork & 0xff, host.release];
     });
     return agent;
-}
-
-static NSInteger errorCodeForCurlCode(CURLcode code)
-{
-    switch (code)
-    {
-        case CURLE_UNSUPPORTED_PROTOCOL:
-            return NSURLErrorUnsupportedURL;
-        case CURLE_URL_MALFORMAT:
-            return NSURLErrorBadURL;
-        case CURLE_COULDNT_RESOLVE_HOST:
-        case CURLE_COULDNT_RESOLVE_PROXY:
-            return NSURLErrorCannotFindHost;
-        case CURLE_COULDNT_CONNECT:
-            return NSURLErrorCannotConnectToHost;
-        case CURLE_OPERATION_TIMEDOUT:
-            return NSURLErrorTimedOut;
-        case CURLE_SEND_ERROR:
-        case CURLE_RECV_ERROR:
-        case CURLE_PARTIAL_FILE:
-            return NSURLErrorNetworkConnectionLost;
-        case CURLE_GOT_NOTHING:
-        case CURLE_WEIRD_SERVER_REPLY:
-            return NSURLErrorBadServerResponse;
-        case CURLE_BAD_CONTENT_ENCODING:
-            return NSURLErrorCannotDecodeContentData;
-        case CURLE_PEER_FAILED_VERIFICATION:
-            return NSURLErrorServerCertificateUntrusted;
-        case CURLE_SSL_CONNECT_ERROR:
-        case CURLE_SSL_CIPHER:
-        case CURLE_SSL_CACERT_BADFILE:
-        case CURLE_SSL_ENGINE_NOTFOUND:
-        case CURLE_SSL_ENGINE_SETFAILED:
-            return NSURLErrorSecureConnectionFailed;
-        case CURLE_SSL_CERTPROBLEM:
-            return NSURLErrorClientCertificateRejected;
-        default:
-            return NSURLErrorUnknown;
-    }
 }
 
 static size_t headerCallback(char *buffer, size_t size, size_t count, void *task)
@@ -1142,12 +1104,15 @@ LOCKED_GETTER(int64_t, countOfBytesExpectedToReceive, _countOfBytesExpectedToRec
         const char *text = (_curlErrorBuffer != NULL && _curlErrorBuffer[0] != '\0') ? _curlErrorBuffer : [self _curl]->easy_strerror(code);
         message = [NSString stringWithUTF8String:text];
     }
+    long verifyResult = 0;
+    if (code == CURLE_PEER_FAILED_VERIFICATION && _easy != NULL)
+        [self _curl]->easy_getinfo(_easy, CURLINFO_SSL_VERIFYRESULT, &verifyResult);
     [self _releaseEasy];
     _transferDoneWhileAwaiting = NO;
 
     if (code != CURLE_OK)
     {
-        [self _finishWithError:[self _errorWithCode:errorCodeForCurlCode(code) description:message]];
+        [self _finishWithError:[self _errorWithCode:_NSURLSessionErrorCodeForCurl(code, verifyResult) description:message]];
         return;
     }
     if (_redirectRequest != nil)
