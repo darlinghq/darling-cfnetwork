@@ -345,6 +345,9 @@ static NSTimeInterval defaultTimeout = 60.0;
 
 @implementation NSMutableURLRequest
 
+// The getters are inherited from NSURLRequest; the setters are written out below.
+@dynamic allowsCellularAccess, allowsExpensiveNetworkAccess, allowsConstrainedNetworkAccess;
+
 - (id)_initWithCFURLRequest:(CFURLRequestRef)req
 {
     CFMutableURLRequestRef request = CFURLRequestCreateMutableCopy(kCFAllocatorDefault, req);
