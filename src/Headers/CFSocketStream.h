@@ -260,6 +260,7 @@ extern const CFStringRef kCFStreamNetworkServiceTypeVoIP;
 extern const CFStringRef kCFStreamNetworkServiceTypeVideo;
 extern const CFStringRef kCFStreamNetworkServiceTypeBackground;
 extern const CFStringRef kCFStreamNetworkServiceTypeVoice;
+extern const CFStringRef kCFStreamNetworkServiceTypeCallSignaling;
 
 CF_INLINE
 SInt32 CFSocketStreamSOCKSGetErrorSubdomain(CFStreamError* error) {
