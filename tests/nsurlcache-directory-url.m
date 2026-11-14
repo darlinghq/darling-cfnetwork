@@ -1,7 +1,8 @@
 // Copyright (C) 2026 Lubos Dolezel
 //
 // Guest test: -[NSURLCache initWithMemoryCapacity:diskCapacity:directoryURL:] keeps the
-// capacities, stores and returns a response, and accepts a nil directory.
+// capacities, stores and returns a response, and accepts a nil directory. The nil-directory cache
+// has a disk capacity because CFURLCache only stores entries that also fit its disk capacity.
 #import <Foundation/Foundation.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,7 +39,7 @@ int main(void)
     expect([cache memoryCapacity] == (1 << 20) && [cache diskCapacity] == (4 << 20), @"capacities are kept");
     roundTrip(cache, @"directory URL");
 
-    NSURLCache *defaulted = [[[NSURLCache alloc] initWithMemoryCapacity: 1 << 20 diskCapacity: 0 directoryURL: nil] autorelease];
+    NSURLCache *defaulted = [[[NSURLCache alloc] initWithMemoryCapacity: 1 << 20 diskCapacity: 4 << 20 directoryURL: nil] autorelease];
     expect(defaulted != nil && [defaulted memoryCapacity] == (1 << 20), @"a nil directory URL uses the default location");
     roundTrip(defaulted, @"nil directory");
 
