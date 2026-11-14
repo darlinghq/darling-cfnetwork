@@ -188,7 +188,22 @@ static Boolean sharedURLCacheSet = false;
             }
         }
     }
+    return [self _initWithMemoryCapacity:memoryCapacity diskCapacity:diskCapacity fullCachePath:cachePath];
+}
 
+// The directory is where the cache is kept, used as given; without one the default location of
+// -initWithMemoryCapacity:diskCapacity:diskPath: applies.
+- (id)initWithMemoryCapacity:(NSUInteger)memoryCapacity diskCapacity:(NSUInteger)diskCapacity directoryURL:(NSURL *)directoryURL
+{
+    if (directoryURL == nil)
+    {
+        return [self initWithMemoryCapacity:memoryCapacity diskCapacity:diskCapacity diskPath:nil];
+    }
+    return [self _initWithMemoryCapacity:memoryCapacity diskCapacity:diskCapacity fullCachePath:[directoryURL path]];
+}
+
+- (id)_initWithMemoryCapacity:(NSUInteger)memoryCapacity diskCapacity:(NSUInteger)diskCapacity fullCachePath:(NSString *)cachePath
+{
     CFURLCacheRef cache = CFURLCacheCreate(kCFAllocatorDefault, memoryCapacity, diskCapacity, (CFStringRef)cachePath);
     if (!cache) {
         [self release];

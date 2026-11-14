@@ -9,5 +9,6 @@
 
 @interface NSURLCache (Internal)
 - (id)_initWithExistingSharedCFURLCache:(CFURLCacheRef)cache;
+- (id)_initWithMemoryCapacity:(NSUInteger)memoryCapacity diskCapacity:(NSUInteger)diskCapacity fullCachePath:(NSString *)cachePath;
 - (CFURLCacheRef)_CFURLCache;
 @end
