@@ -87,6 +87,13 @@ CONST_STRING_DECL(kCFStreamPropertySSLPeerCertificates, "kCFStreamPropertySSLPee
 CONST_STRING_DECL(_kCFStreamPropertySSLClientCertificates, "_kCFStreamPropertySSLClientCertificates")
 CONST_STRING_DECL(_kCFStreamPropertySSLClientCertificateState, "_kCFStreamPropertySSLClientCertificateState")
 CONST_STRING_DECL(kCFStreamPropertySSLSettings, "kCFStreamPropertySSLSettings")
+/* The kind of traffic a stream carries; Darling does not prioritise any. */
+CONST_STRING_DECL(kCFStreamNetworkServiceType, "kCFStreamNetworkServiceType")
+CONST_STRING_DECL(kCFStreamNetworkServiceTypeVoIP, "kCFStreamNetworkServiceTypeVoIP")
+CONST_STRING_DECL(kCFStreamNetworkServiceTypeVideo, "kCFStreamNetworkServiceTypeVideo")
+CONST_STRING_DECL(kCFStreamNetworkServiceTypeBackground, "kCFStreamNetworkServiceTypeBackground")
+CONST_STRING_DECL(kCFStreamNetworkServiceTypeVoice, "kCFStreamNetworkServiceTypeVoice")
+CONST_STRING_DECL(kCFStreamNetworkServiceTypeCallSignaling, "kCFStreamNetworkServiceTypeCallSignaling")
 CONST_STRING_DECL(kCFStreamSSLAllowsAnyRoot, "kCFStreamSSLAllowsAnyRoot")
 CONST_STRING_DECL(kCFStreamSSLAllowsExpiredCertificates, "kCFStreamSSLAllowsExpiredCertificates")
 CONST_STRING_DECL(kCFStreamSSLAllowsExpiredRoots, "kCFStreamSSLAllowsExpiredRoots")
