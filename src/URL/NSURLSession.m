@@ -65,6 +65,51 @@ static const NSInteger kDefaultMaximumConnectionsPerHost = 6;
 @implementation NSURLSessionDataTask
 @end
 
+@implementation NSURLSessionWebSocketMessage
+
+- (instancetype)initWithData:(NSData *)data
+{
+    if ((self = [super init])) {
+        _type = NSURLSessionWebSocketMessageTypeData;
+        _data = [data copy];
+    }
+    return self;
+}
+
+- (instancetype)initWithString:(NSString *)string
+{
+    if ((self = [super init])) {
+        _type = NSURLSessionWebSocketMessageTypeString;
+        _string = [string copy];
+    }
+    return self;
+}
+
+- (void)dealloc
+{
+    [_data release];
+    [_string release];
+    [super dealloc];
+}
+
+- (NSURLSessionWebSocketMessageType)type
+{
+    return _type;
+}
+
+// A message holds either data or a string; the other accessor returns nil.
+- (NSData *)data
+{
+    return _data;
+}
+
+- (NSString *)string
+{
+    return _string;
+}
+
+@end
+
 @implementation NSURLSessionDownloadTask
 @end
 
