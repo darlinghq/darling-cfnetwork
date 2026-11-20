@@ -28,25 +28,35 @@ static CFURLProtectionSpaceServerType protocolToCFServerType(NSString * const pr
     {
         return kCFURLProtectionSpaceServerFTP;
     }
-    else if ([protocol isEqualToString:NSURLProtectionSpaceHTTPProxy])
+    else
     {
-        return kCFURLProtectionSpaceProxyHTTP;
+        // The proxy type constants are for initWithProxyHost: (SOCKS is only a proxy type, and the others equal
+        // the server strings), so a server space never becomes a proxy space here. A protocol with no server
+        // type is stored as HTTP (known gap).
+        return kCFURLProtectionSpaceServerHTTP;
     }
-    else if ([protocol isEqualToString:NSURLProtectionSpaceHTTPSProxy])
+}
+
+// The proxy type strings are the same as the server protocol strings (NSURLProtectionSpaceHTTPProxy is "http"),
+// so a proxy space is told from a server space by how it was created, not by the string.
+static CFURLProtectionSpaceServerType proxyTypeToCFServerType(NSString * const type)
+{
+    if ([type isEqualToString:NSURLProtectionSpaceHTTPSProxy])
     {
         return kCFURLProtectionSpaceProxyHTTPS;
     }
-    else if ([protocol isEqualToString:NSURLProtectionSpaceFTPProxy])
+    else if ([type isEqualToString:NSURLProtectionSpaceFTPProxy])
     {
         return kCFURLProtectionSpaceProxyFTP;
     }
-    else if ([protocol isEqualToString:NSURLProtectionSpaceSOCKSProxy])
+    else if ([type isEqualToString:NSURLProtectionSpaceSOCKSProxy])
     {
         return kCFURLProtectionSpaceProxySOCKS;
     }
     else
     {
-        return kCFURLProtectionSpaceServerHTTP;
+        // GUESS: an unknown proxy type is an HTTP proxy, as an unknown protocol is HTTP for a server space.
+        return kCFURLProtectionSpaceProxyHTTP;
     }
 }
 
@@ -136,7 +146,13 @@ static CFURLProtectionSpaceAuthenticationSchemeType methodToCFAuthScheme(NSStrin
 
 - (id)initWithProxyHost:(NSString *)host port:(NSInteger)port type:(NSString *)type realm:(NSString *)realm authenticationMethod:(NSString *)authenticationMethod
 {
-    return [self initWithHost:host port:port protocol:type realm:realm authenticationMethod:authenticationMethod];
+    self = [self _internalInit];
+    if (self != nil)
+    {
+        CFURLProtectionSpaceAuthenticationSchemeType scheme = methodToCFAuthScheme(authenticationMethod);
+        _internal = (NSURLProtectionSpaceInternal *)CFURLProtectionSpaceCreate(kCFAllocatorDefault, (CFStringRef)host, port, proxyTypeToCFServerType(type), (CFStringRef)realm, scheme);
+    }
+    return self;
 }
 
 - (id)initWithCoder:(NSCoder *)coder
@@ -242,18 +258,39 @@ static CFURLProtectionSpaceAuthenticationSchemeType methodToCFAuthScheme(NSStrin
 
 - (NSString *)proxyType
 {
-    if ([self isProxy])
+    // nil unless the receiver is a proxy space (documented on URLProtectionSpace.proxyType).
+    switch ((UInt32)CFURLProtectionSpaceGetServerType((CFURLProtectionSpaceRef)_internal))
     {
-        return [self protocol];
-    }
-    else
-    {
-        return nil;
+        case kCFURLProtectionSpaceProxyHTTP:
+        {
+            return NSURLProtectionSpaceHTTPProxy;
+        }
+        case kCFURLProtectionSpaceProxyHTTPS:
+        {
+            return NSURLProtectionSpaceHTTPSProxy;
+        }
+        case kCFURLProtectionSpaceProxyFTP:
+        {
+            return NSURLProtectionSpaceFTPProxy;
+        }
+        case kCFURLProtectionSpaceProxySOCKS:
+        {
+            return NSURLProtectionSpaceSOCKSProxy;
+        }
+        default:
+        {
+            return nil;
+        }
     }
 }
 
 - (NSString *)protocol
 {
+    // nil if the receiver represents a proxy protection space (documented on URLProtectionSpace.protocol).
+    if ([self isProxy])
+    {
+        return nil;
+    }
     switch ((UInt32)CFURLProtectionSpaceGetServerType((CFURLProtectionSpaceRef)_internal))
     {
         case kCFURLProtectionSpaceServerHTTP:
