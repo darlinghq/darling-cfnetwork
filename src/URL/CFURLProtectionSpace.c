@@ -32,6 +32,35 @@ static void __CFURLProtectionSpaceDeallocate(CFTypeRef cf) {
     }
 }
 
+static Boolean __CFURLProtectionSpaceStringsEqual(CFStringRef a, CFStringRef b) {
+    return a == b || (a != NULL && b != NULL && CFEqual(a, b));
+}
+
+// Two protection spaces are the same when they agree on host, port, server type (which tells a proxy from an
+// origin server and gives the protocol), realm and authentication method. Known gap: NSURLProtectionSpace maps a
+// protocol the server types do not cover (such as "smtp") to HTTP, so such spaces compare equal to HTTP ones. GUESS: the documentation of NSURLProtectionSpace names host, port, protocol and
+// realm as what a credential is matched on and does not say what isEqual compares; the authentication
+// method is added because spaces that differ in it ask for different credentials.
+static Boolean __CFURLProtectionSpaceEqual(CFTypeRef cf1, CFTypeRef cf2) {
+    const struct _CFURLProtectionSpace *a = (const struct _CFURLProtectionSpace *)cf1;
+    const struct _CFURLProtectionSpace *b = (const struct _CFURLProtectionSpace *)cf2;
+    return a->port == b->port
+        && a->serverType == b->serverType
+        && a->scheme == b->scheme
+        && __CFURLProtectionSpaceStringsEqual(a->host, b->host)
+        && __CFURLProtectionSpaceStringsEqual(a->realm, b->realm);
+}
+
+static CFHashCode __CFURLProtectionSpaceHash(CFTypeRef cf) {
+    const struct _CFURLProtectionSpace *space = (const struct _CFURLProtectionSpace *)cf;
+    CFHashCode hash = (CFHashCode)space->port;
+    hash = hash * 31 + (CFHashCode)space->serverType;
+    hash = hash * 31 + (CFHashCode)space->scheme;
+    hash = hash * 31 + (space->host != NULL ? CFHash(space->host) : 0);
+    hash = hash * 31 + (space->realm != NULL ? CFHash(space->realm) : 0);
+    return hash;
+}
+
 static CFTypeID __kCFURLProtectionSpaceTypeID = _kCFRuntimeNotATypeID;
 
 static const CFRuntimeClass __CFURLProtectionSpaceClass = {
@@ -40,8 +69,8 @@ static const CFRuntimeClass __CFURLProtectionSpaceClass = {
     NULL,
     NULL,
     __CFURLProtectionSpaceDeallocate,
-    NULL,
-    NULL,
+    __CFURLProtectionSpaceEqual,
+    __CFURLProtectionSpaceHash,
     NULL,
     NULL
 };
@@ -125,8 +154,7 @@ CFURLProtectionSpaceServerType CFURLProtectionSpaceGetServerType(CFURLProtection
 }
 
 Boolean CFURLProtectionSpaceIsProxy(CFURLProtectionSpaceRef space) {
-    DEBUG_BREAK();
-    return false;
+    return space->serverType >= kCFURLProtectionSpaceProxyHTTP;
 }
 
 Boolean CFURLProtectionSpaceReceivesCredentialSecurely(CFURLProtectionSpaceRef space) {
