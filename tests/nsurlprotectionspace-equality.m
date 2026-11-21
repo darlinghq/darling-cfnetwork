@@ -47,7 +47,7 @@ int main(void)
                                                                   authenticationMethod:NSURLAuthenticationMethodHTTPBasic] autorelease];
         expect([proxy isProxy] && ![server isProxy], @"isProxy tells the two apart");
         expect([[proxy proxyType] isEqualToString:NSURLProtectionSpaceHTTPProxy] && [server proxyType] == nil, @"proxyType");
-        expect([proxy protocol] == nil && [[server protocol] isEqualToString:NSURLProtectionSpaceHTTP], @"protocol is nil for a proxy space (documented)");
+        expect([[proxy protocol] isEqualToString:NSURLProtectionSpaceHTTP] && [[server protocol] isEqualToString:NSURLProtectionSpaceHTTP], @"protocol of a proxy space (observed on macOS)");
         expect(![proxy isEqual:server] && ![server isEqual:proxy], @"a proxy space is not the origin server space");
         NSURLProtectionSpace *proxy2 = [[[NSURLProtectionSpace alloc] initWithProxyHost:@"proxy.example.test" port:80 type:NSURLProtectionSpaceHTTPProxy realm:@"realm"
                                                                    authenticationMethod:NSURLAuthenticationMethodHTTPBasic] autorelease];
@@ -58,7 +58,7 @@ int main(void)
         NSURLProtectionSpace *httpsProxy = [[[NSURLProtectionSpace alloc] initWithProxyHost:@"proxy.example.test" port:80 type:NSURLProtectionSpaceHTTPSProxy realm:@"realm"
                                                                        authenticationMethod:NSURLAuthenticationMethodHTTPBasic] autorelease];
         expect(![proxy isEqual:httpsProxy], @"HTTP and HTTPS proxies differ");
-        expect([[socks proxyType] isEqualToString:NSURLProtectionSpaceSOCKSProxy] && [socks protocol] == nil, @"SOCKS proxy type");
+        expect([[socks proxyType] isEqualToString:NSURLProtectionSpaceSOCKSProxy] && [[socks protocol] isEqualToString:NSURLProtectionSpaceSOCKSProxy], @"SOCKS proxy type");
         // SOCKS is only a proxy type: asking for it as a server protocol does not make a proxy space.
         NSURLProtectionSpace *socksServer = make(@"proxy.example.test", 80, NSURLProtectionSpaceSOCKSProxy, @"realm", NSURLAuthenticationMethodHTTPBasic);
         expect(![socksServer isProxy] && ![socksServer isEqual:socks], @"a server space is never a proxy space");

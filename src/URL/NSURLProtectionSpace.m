@@ -286,11 +286,9 @@ static CFURLProtectionSpaceAuthenticationSchemeType methodToCFAuthScheme(NSStrin
 
 - (NSString *)protocol
 {
-    // nil if the receiver represents a proxy protection space (documented on URLProtectionSpace.protocol).
-    if ([self isProxy])
-    {
-        return nil;
-    }
+    // A proxy space reports its proxy type string as the protocol (observed on macOS 26.7.3, tier 2: an HTTP proxy
+    // space has protocol "http", a SOCKS one "SOCKS"), although the documentation says it is nil. Test:
+    // tests/nsurlprotectionspace-equality.m, "protocol of a proxy space".
     switch ((UInt32)CFURLProtectionSpaceGetServerType((CFURLProtectionSpaceRef)_internal))
     {
         case kCFURLProtectionSpaceServerHTTP:
