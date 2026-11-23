@@ -10,10 +10,23 @@
 #import "NSURLRequestInternal.h"
 #import <Foundation/NSException.h>
 #import <Foundation/NSData.h>
+#import <Foundation/NSCoder.h>
+#import <Foundation/NSKeyedArchiver.h>
+#import <Foundation/NSSet.h>
+#import <Foundation/NSDictionary.h>
+#import <Foundation/NSArray.h>
+#import <Foundation/NSString.h>
+#import <Foundation/NSValue.h>
+#import <Foundation/NSDate.h>
 #import <Foundation/NSPathUtilities.h>
 
 static NSUInteger NSURLCacheDefaultMemoryCapacity = 512000;
 static NSUInteger NSURLCacheDefaultDiskCapacity = 10000000;
+
+// The public header says only <NSCoding, NSCopying>, and NSKeyedArchiver refuses to archive under secure coding an
+// object whose class does not conform to NSSecureCoding.
+@interface NSCachedURLResponse () <NSSecureCoding>
+@end
 
 @implementation NSCachedURLResponse
 
@@ -74,16 +87,56 @@ static NSUInteger NSURLCacheDefaultDiskCapacity = 10000000;
     [super dealloc];
 }
 
+// Keyed coding of the response, the data, the user info and the storage policy: the properties the documentation
+// lists for NSCachedURLResponse. Decodes are class-checked, so a cached response can be unarchived with secure
+// coding required.
+// GUESS: the key names are this implementation's own (the documentation gives no archive layout), as in
+// NSURLResponse; only archives written by this implementation are promised to decode.
+// GUESS: under secure coding the user info may hold only property list classes (dictionaries, arrays, strings,
+// numbers, data and dates); the documentation does not say which classes a user info may carry.
++ (BOOL)supportsSecureCoding
+{
+    return YES;
+}
+
 - (id)initWithCoder:(NSCoder*)coder
 {
-    NSAssert(NO, @"not implemented");
-    [self release];
-    return nil;
+    if (![coder allowsKeyedCoding])
+    {
+        [self release];
+        return nil;
+    }
+    NSURLResponse* response = [coder decodeObjectOfClasses:[NSSet setWithObjects:[NSURLResponse class], [NSHTTPURLResponse class], nil] forKey:@"NS.response"];
+    NSData* data = [coder decodeObjectOfClass:[NSData class] forKey:@"NS.data"];
+    NSSet* userInfoClasses = [NSSet setWithObjects:[NSDictionary class], [NSArray class], [NSString class], [NSNumber class], [NSData class], [NSDate class], nil];
+    NSDictionary* userInfo = [coder decodeObjectOfClasses:userInfoClasses forKey:@"NS.userInfo"];
+    NSInteger policy = [coder decodeIntegerForKey:@"NS.storagePolicy"];
+    // The response and the data are needed to make a cached response. Decoding without secure coding does not check
+    // the class of a stored object, so the classes are checked here: a response, data or user info of another class
+    // gives nil, and so does a storage policy outside the documented three.
+    if (![response isKindOfClass:[NSURLResponse class]] || ![data isKindOfClass:[NSData class]] ||
+        ([coder containsValueForKey:@"NS.userInfo"] && ![userInfo isKindOfClass:[NSDictionary class]]) ||
+        policy < (NSInteger)NSURLCacheStorageAllowed || policy > (NSInteger)NSURLCacheStorageNotAllowed)
+    {
+        [self release];
+        return nil;
+    }
+    return [self initWithResponse:response data:data userInfo:userInfo storagePolicy:(NSURLCacheStoragePolicy)policy];
 }
 
 - (void)encodeWithCoder:(NSCoder*)coder
 {
-    NSAssert(NO, @"not implemented");
+    if (![coder allowsKeyedCoding])
+    {
+        [NSException raise:NSInvalidArchiveOperationException format:@"NSCachedURLResponse can only be encoded by a keyed archiver."];
+    }
+    [coder encodeObject:[self response] forKey:@"NS.response"];
+    [coder encodeObject:[self data] forKey:@"NS.data"];
+    if ([self userInfo] != nil)
+    {
+        [coder encodeObject:[self userInfo] forKey:@"NS.userInfo"];
+    }
+    [coder encodeInteger:(NSInteger)[self storagePolicy] forKey:@"NS.storagePolicy"];
 }
 
 - (CFCachedURLResponseRef)_CFCachedURLResponse
