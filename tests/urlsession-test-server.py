@@ -37,6 +37,8 @@ class Handler(BaseHTTPRequestHandler):
 
         if url.path == "/text":
             self.reply(200, b"hello from host\n")
+        elif url.path == "/peer":
+            self.reply(200, str(self.client_address[1]).encode())
         elif url.path == "/echo":
             echo = {
                 "method": self.command,

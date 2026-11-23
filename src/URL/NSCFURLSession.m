@@ -296,6 +296,49 @@ static void deliverMetrics(__NSCFURLSession *session, NSURLSessionTask *task, NS
     }];
 }
 
+// Runs the completion handler of flush and reset. Observed on macOS 26.7.3 and 10.14.4 (black-box probe,
+// tests/nsurlsession-reset-flush.m): the handler is called asynchronously on a queue of the session's own, not on
+// the delegate queue, and a nil handler is accepted.
+static void deliverFlushCompletion(void (^completionHandler)(void))
+{
+    if (completionHandler == nil)
+        return;
+    static dispatch_once_t once;
+    static dispatch_queue_t queue;
+    dispatch_once(&once, ^{
+        queue = dispatch_queue_create("org.darlinghq.NSURLSession.work", DISPATCH_QUEUE_SERIAL);
+    });
+    dispatch_async(queue, completionHandler);
+}
+
+// Observed on macOS 26.7.3 and 10.14.4: a request sent after a flush or a reset keeps using the session's idle
+// connection (the documentation says later requests use a new one, but the observation is what applications see).
+// The cookie store already writes through to disk on every change, the credential store has no disk file, and the
+// cache has no separate transient part, so there is nothing else to flush.
+- (void)flushWithCompletionHandler:(void (^)(void))completionHandler
+{
+    deliverFlushCompletion(completionHandler);
+}
+
+// Documented: empties all cookies, caches and credential stores and flushes. Only the stores of this session's
+// configuration are emptied. Downloads are written to disk as they arrive, so there is nothing to flush for them.
+- (void)resetWithCompletionHandler:(void (^)(void))completionHandler
+{
+    NSHTTPCookieStorage *cookies = [_configuration HTTPCookieStorage];
+    [cookies removeCookiesSinceDate:[NSDate distantPast]];
+
+    NSURLCredentialStorage *credentials = [_configuration URLCredentialStorage];
+    NSDictionary *all = [credentials allCredentials];
+    for (NSURLProtectionSpace *space in all)
+    {
+        for (NSURLCredential *credential in [[all objectForKey:space] allValues])
+            [credentials removeCredential:credential forProtectionSpace:space];
+    }
+
+    [[_configuration URLCache] removeAllCachedResponses];
+    [self flushWithCompletionHandler:completionHandler];
+}
+
 // Returns YES if the caller must deliver the invalidation.
 - (BOOL)_invalidateLocked
 {
