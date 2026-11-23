@@ -72,7 +72,17 @@ static BOOL refsMatch(CFTypeRef a, CFTypeRef b)
     return a == b || (a != NULL && b != NULL && CFEqual(a, b));
 }
 
+// NSURLCredential supports secure coding (as documented); a secure unarchiver only decodes classes
+// that adopt NSSecureCoding.
+@interface NSURLCredential () <NSSecureCoding>
+@end
+
 @implementation NSURLCredential
+
++ (BOOL)supportsSecureCoding
+{
+    return YES;
+}
 
 - (id)init
 {
@@ -152,8 +162,8 @@ static BOOL refsMatch(CFTypeRef a, CFTypeRef b)
         [self release];
         return nil;
     }
-    NSString *user = [coder decodeObjectForKey:@"user"];
-    NSString *password = [coder decodeObjectForKey:@"password"];
+    NSString *user = [coder decodeObjectOfClass:[NSString class] forKey:@"user"];
+    NSString *password = [coder decodeObjectOfClass:[NSString class] forKey:@"password"];
     NSURLCredentialPersistence persistence = (NSURLCredentialPersistence)[coder decodeIntegerForKey:@"persistence"];
     return [self initWithUser:user password:password persistence:persistence];
 }
