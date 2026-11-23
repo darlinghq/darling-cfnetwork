@@ -10,10 +10,26 @@
 #import "NSURLRequestInternal.h"
 #import <Foundation/NSException.h>
 #import <Foundation/NSData.h>
+#import <Foundation/NSCoder.h>
+#import <Foundation/NSKeyedArchiver.h>
+#import <Foundation/NSSet.h>
+#import <Foundation/NSDictionary.h>
+#import <Foundation/NSArray.h>
+#import <Foundation/NSString.h>
+#import <Foundation/NSValue.h>
+#import <Foundation/NSNull.h>
+#import <Foundation/NSPropertyList.h>
+#import <Foundation/NSURL.h>
+#import <Foundation/NSDate.h>
 #import <Foundation/NSPathUtilities.h>
 
 static NSUInteger NSURLCacheDefaultMemoryCapacity = 512000;
 static NSUInteger NSURLCacheDefaultDiskCapacity = 10000000;
+
+// The public header says only <NSCoding, NSCopying>, and NSKeyedArchiver refuses to archive under secure coding an
+// object whose class does not conform to NSSecureCoding.
+@interface NSCachedURLResponse () <NSSecureCoding>
+@end
 
 @implementation NSCachedURLResponse
 
@@ -74,16 +90,153 @@ static NSUInteger NSURLCacheDefaultDiskCapacity = 10000000;
     [super dealloc];
 }
 
+// Keyed coding of the response, the data, the user info and the storage policy, in the layout that macOS writes (found
+// by reading keyed archives written by macOS 26.7.3 and 10.14.4, x86_64 and i386, as property lists; the layout is the
+// same for plain and secure archivers). Two unkeyed integers (12 and the storage policy), then under the keys
+// _NSURLResponseType (the response, in the layout of NSURLResponse), _CFCachedURLResponseReceiverDataArray (an array
+// with the data), _NSDataType (the data), _NSDictionaryType (the user info as an ordinary dictionary, or nil) and
+// _CFCachedURLResponseUserInfo, the user info as a binary property list, present only when the user info is a valid
+// property list. The reader takes the user info from the property list, so a user info that is not one (it holds a
+// URL, null or a non-string key) comes back as nil; macOS 10.14.4 wraps the property list data in an NSMutableData
+// and 26.7.3 does not, both archives are read by both systems and the wrapper of 10.14.4 is written. Decodes are
+// class-checked, so a cached response can be unarchived with secure coding required.
+// Test: tests/nscachedurlresponse-macos-archive.m
+static const int CachedURLResponseArchiveFormat = 12;
+
+// The classes that a secure unarchiver allows in the dictionary stored under _NSDictionaryType.
+static NSSet *cachedUserInfoSecureClasses(void)
+{
+    return [NSSet setWithObjects:[NSDictionary class], [NSString class], [NSNumber class], [NSData class], nil];
+}
+
+static NSSet *cachedUserInfoWideClasses(void)
+{
+    return [NSSet setWithObjects:[NSDictionary class], [NSArray class], [NSString class], [NSNumber class], [NSData class],
+        [NSDate class], [NSNull class], [NSURL class], nil];
+}
+
+static BOOL cachedUserInfoHasOnlySecureClasses(id object)
+{
+    if ([object isKindOfClass:[NSDictionary class]])
+    {
+        for (id key in object)
+        {
+            if (!cachedUserInfoHasOnlySecureClasses(key) || !cachedUserInfoHasOnlySecureClasses([object objectForKey:key]))
+            {
+                return NO;
+            }
+        }
+        return YES;
+    }
+    return [object isKindOfClass:[NSString class]] || [object isKindOfClass:[NSNumber class]] || [object isKindOfClass:[NSData class]];
+}
+
++ (BOOL)supportsSecureCoding
+{
+    return YES;
+}
+
 - (id)initWithCoder:(NSCoder*)coder
 {
-    NSAssert(NO, @"not implemented");
-    [self release];
-    return nil;
+    int format = 0;
+    int policy = -1;
+    if (![coder allowsKeyedCoding])
+    {
+        [self release];
+        return nil;
+    }
+    // The unkeyed values ($0, $1) cannot be tested with containsValueForKey:, so an archive without them reads as
+    // zeros or raises, and either way is not accepted.
+    @try
+    {
+        [coder decodeValueOfObjCType:@encode(int) at:&format size:sizeof(format)];
+        [coder decodeValueOfObjCType:@encode(int) at:&policy size:sizeof(policy)];
+    }
+    @catch (NSException* exception)
+    {
+        [self release];
+        return nil;
+    }
+    NSURLResponse* response = [coder decodeObjectOfClasses:[NSSet setWithObjects:[NSURLResponse class], [NSHTTPURLResponse class], nil] forKey:@"_NSURLResponseType"];
+    NSData* data = [coder decodeObjectOfClass:[NSData class] forKey:@"_NSDataType"];
+    if (data == nil)
+    {
+        NSArray* dataArray = [coder decodeObjectOfClasses:[NSSet setWithObjects:[NSArray class], [NSData class], nil] forKey:@"_CFCachedURLResponseReceiverDataArray"];
+        data = [dataArray isKindOfClass:[NSArray class]] && [dataArray count] > 0 ? [dataArray objectAtIndex:0] : nil;
+    }
+    NSData* userInfoData = [coder decodeObjectOfClass:[NSData class] forKey:@"_CFCachedURLResponseUserInfo"];
+    // Decoding without secure coding does not check the class of a stored object, so the classes are checked here: a
+    // response or data of another class gives nil, and so does a storage policy outside the documented three.
+    if (format != CachedURLResponseArchiveFormat || ![response isKindOfClass:[NSURLResponse class]] || ![data isKindOfClass:[NSData class]] ||
+        policy < (int)NSURLCacheStorageAllowed || policy > (int)NSURLCacheStorageNotAllowed)
+    {
+        [self release];
+        return nil;
+    }
+    NSDictionary* userInfo = nil;
+    if ([userInfoData isKindOfClass:[NSData class]])
+    {
+        id list = [NSPropertyListSerialization propertyListWithData:userInfoData options:NSPropertyListImmutable format:NULL error:NULL];
+        userInfo = [list isKindOfClass:[NSDictionary class]] ? list : nil;
+    }
+    // QUIRK: a secure unarchiver does not refuse a cached response whose archived user info dictionary holds a class
+    // other than dictionary, string, number or data (an array, a date, null, a URL); it returns an object that has the
+    // response but no data and no user info (the storage policy of that object is not set on macOS; it is
+    // NSURLCacheStorageNotAllowed here, so the object is not stored). Evidence: black-box reading of archives on macOS
+    // 26.7.3 and 10.14.4 (x86_64 and i386), tier 2, the same results from both; not documented.
+    // Test: test_quirk_secure_user_info_with_other_classes in tests/nscachedurlresponse-macos-archive.m
+    if ([coder requiresSecureCoding] && [coder containsValueForKey:@"_NSDictionaryType"])
+    {
+        BOOL refused = NO;
+        id archivedUserInfo = [coder decodeObjectOfClasses:cachedUserInfoWideClasses() forKey:@"_NSDictionaryType"];
+        if (archivedUserInfo != nil)
+        {
+            // The unarchiver may check the classes of the nested objects itself or only those of the top level, so
+            // the tree is checked here as well.
+            refused = !cachedUserInfoHasOnlySecureClasses(archivedUserInfo);
+            if (!refused)
+            {
+                @try
+                {
+                    refused = [coder decodeObjectOfClasses:cachedUserInfoSecureClasses() forKey:@"_NSDictionaryType"] == nil;
+                }
+                @catch (NSException* exception)
+                {
+                    refused = YES;
+                }
+            }
+        }
+        if (refused)
+        {
+            return [self initWithResponse:response data:[NSData data] userInfo:nil storagePolicy:NSURLCacheStorageNotAllowed];
+        }
+    }
+    return [self initWithResponse:response data:data userInfo:userInfo storagePolicy:(NSURLCacheStoragePolicy)policy];
 }
 
 - (void)encodeWithCoder:(NSCoder*)coder
 {
-    NSAssert(NO, @"not implemented");
+    if (![coder allowsKeyedCoding])
+    {
+        [NSException raise:NSInvalidArchiveOperationException format:@"NSCachedURLResponse can only be encoded by a keyed archiver."];
+    }
+    int format = CachedURLResponseArchiveFormat;
+    int policy = (int)[self storagePolicy];
+    NSData* data = [self data];
+    [coder encodeValueOfObjCType:@encode(int) at:&format];
+    [coder encodeValueOfObjCType:@encode(int) at:&policy];
+    [coder encodeObject:[self response] forKey:@"_NSURLResponseType"];
+    [coder encodeObject:[NSArray arrayWithObject:data] forKey:@"_CFCachedURLResponseReceiverDataArray"];
+    [coder encodeObject:data forKey:@"_NSDataType"];
+    [coder encodeObject:[self userInfo] forKey:@"_NSDictionaryType"];
+    if ([self userInfo] != nil)
+    {
+        NSData* list = [NSPropertyListSerialization dataWithPropertyList:[self userInfo] format:NSPropertyListBinaryFormat_v1_0 options:0 error:NULL];
+        if (list != nil)
+        {
+            [coder encodeObject:[NSMutableData dataWithData:list] forKey:@"_CFCachedURLResponseUserInfo"];
+        }
+    }
 }
 
 - (CFCachedURLResponseRef)_CFCachedURLResponse
@@ -108,7 +261,11 @@ static NSUInteger NSURLCacheDefaultDiskCapacity = 10000000;
 - (NSData*)data
 {
     CFDataRef data = NULL;
-    CFCachedURLResponseLoadData(_cachedResponseRef, &data);
+    if (CFCachedURLResponseLoadData(_cachedResponseRef, &data) && data == NULL)
+    {
+        // The data is empty (CFCachedURLResponseLoadData has no data object for an entry of no bytes).
+        return [NSData data];
+    }
     NSAssert(data, @"Cached URL response data is not available");
     return [(NSData*)data autorelease];
 }

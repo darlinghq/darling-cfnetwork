@@ -3,10 +3,12 @@
 // NSSecureCoding for NSURLRequest, NSMutableURLRequest, NSURLResponse and
 // NSHTTPURLResponse: +supportsSecureCoding, round trips through a secure
 // NSKeyedArchiver, the default (non-secure) archiver, and refusal of archives
-// whose stored values have the wrong class. The archive layout is not the
-// same as macOS's, so the malformed-archive checks run only with the argument
-// "strict" (on Darling); without it the file checks the public contract and
-// passes on macOS 27 as well.
+// whose stored values have the wrong class. The archive layout of a request is
+// not the same as macOS's, so its malformed-archive checks run only with the
+// argument "strict" (on Darling); without it the file checks the public
+// contract and passes on macOS 27 as well. The layout of responses is that of
+// macOS and is checked, with archives written by macOS, in
+// nscachedurlresponse-macos-archive.m.
 #import <Foundation/Foundation.h>
 #include <stdio.h>
 #include <string.h>
@@ -153,7 +155,7 @@ int main(int argc, char **argv) {
         CHECK(roundTrip(http, @[[NSURLRequest class]], YES) == nil);
 
         if (strict) {
-            // Malformed archives: stored values of the wrong class must not be accepted.
+            // Malformed request archives: stored values of the wrong class must not be accepted.
             CHECK(decodeSpoof(@"NSURLRequest", @{@"NS.url": @"http://example.test/"}, @{}, [NSURLRequest class], YES) == nil);
             CHECK(decodeSpoof(@"NSURLRequest", @{@"NS.url": url, @"NS.HTTPMethod": @[@"GET"]}, @{}, [NSURLRequest class], YES) == nil);
             CHECK(decodeSpoof(@"NSURLRequest", @{@"NS.url": url, @"NS.HTTPBody": @"text"}, @{}, [NSURLRequest class], YES) == nil);
@@ -161,15 +163,6 @@ int main(int argc, char **argv) {
             CHECK(decodeSpoof(@"NSURLRequest", @{@"NS.url": url, @"NS.HTTPHeaders": @[@"a"]}, @{}, [NSURLRequest class], YES) == nil);
             CHECK(decodeSpoof(@"NSURLRequest", @{@"NS.url": url, @"NS.HTTPHeaders": @{@"a": @1}}, @{}, [NSURLRequest class], YES) == nil);
             CHECK(decodeSpoof(@"NSURLRequest", @{@"NS.url": url}, @{}, [NSURLRequest class], YES) != nil); // minimal archive is fine
-            CHECK(decodeSpoof(@"NSURLResponse", @{@"NS.url": @"http://example.test/"}, @{}, [NSURLResponse class], YES) == nil);
-            CHECK(decodeSpoof(@"NSURLResponse", @{@"NS.url": url, @"NS.MIMEType": @5}, @{}, [NSURLResponse class], YES) == nil);
-            CHECK(decodeSpoof(@"NSURLResponse", @{@"NS.url": url, @"NS.textEncodingName": [NSURL URLWithString:@"http://other.example.test/"]}, @{}, [NSURLResponse class], YES) == nil);
-            CHECK(decodeSpoof(@"NSURLResponse", @{@"NS.url": url}, @{}, [NSURLResponse class], YES) != nil);
-            CHECK(decodeSpoof(@"NSHTTPURLResponse", @{@"NS.url": url}, @{}, [NSHTTPURLResponse class], YES) == nil); // no status code
-            CHECK(decodeSpoof(@"NSHTTPURLResponse", @{@"NS.url": url, @"NS.headerFields": @"x"}, @{@"NS.statusCode": @200}, [NSHTTPURLResponse class], YES) == nil);
-            CHECK(decodeSpoof(@"NSHTTPURLResponse", @{@"NS.url": url, @"NS.headerFields": @{@"a": @1}}, @{@"NS.statusCode": @200}, [NSHTTPURLResponse class], YES) == nil);
-            NSHTTPURLResponse *ok = decodeSpoof(@"NSHTTPURLResponse", @{@"NS.url": url}, @{@"NS.statusCode": @204}, [NSHTTPURLResponse class], YES);
-            CHECK(ok.statusCode == 204);
         }
 
         if (failures) { printf("%d failure(s)\n", failures); return 1; }
