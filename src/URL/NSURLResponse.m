@@ -200,6 +200,13 @@ static inline NSString *NSURLLocalizedString(NSString *key)
 
 @implementation NSHTTPURLResponse
 
+// Restated next to this class's own -initWithCoder:; a secure unarchiver refuses a class whose
+// decoding initializer comes from below its +supportsSecureCoding.
++ (BOOL)supportsSecureCoding
+{
+    return YES;
+}
+
 + (BOOL)isErrorStatusCode:(NSInteger)statusCode
 {
     if (statusCode < 100)
