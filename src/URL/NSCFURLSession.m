@@ -296,6 +296,53 @@ static void deliverMetrics(__NSCFURLSession *session, NSURLSessionTask *task, NS
     }];
 }
 
+// Documented: both calls make future requests use a new connection, and the handler runs on the delegate queue.
+// The libcurl transport keeps one connection cache for all sessions and cannot close one session's idle
+// connections, so the session marks every later transfer as fresh-connection instead.
+// GUESS: "future requests" is taken as all of them, not only the next one; the documentation does not say, and
+// a later request reusing a connection that predates the call is the one thing it rules out.
+// Side effect: the fresh connections of such a session keep entering the connection cache that all sessions share,
+// so idle connections of other sessions can be pushed out of it.
+- (BOOL)_wantsFreshConnection
+{
+    [_lock lock];
+    BOOL fresh = _freshConnections;
+    [_lock unlock];
+    return fresh;
+}
+
+// Documented: flushes cookies and credentials to disk, clears transient caches, and ensures future requests
+// use a new TCP connection. The cookie store already writes through to disk on every change and the credential
+// store has no disk file, and the cache has no separate transient part, so only the connection part has an effect.
+- (void)flushWithCompletionHandler:(void (^)(void))completionHandler
+{
+    [_lock lock];
+    _freshConnections = YES;
+    [_lock unlock];
+    if (completionHandler != nil)
+        [self _addDelegateBlock:completionHandler];
+}
+
+// Documented: empties all cookies, caches and credential stores, removes disk files, flushes in-progress
+// downloads to disk, and ensures future requests use a new connection. Only the stores of this session's
+// configuration are emptied. Downloads are written to disk as they arrive, so there is nothing to flush for them.
+- (void)resetWithCompletionHandler:(void (^)(void))completionHandler
+{
+    NSHTTPCookieStorage *cookies = [_configuration HTTPCookieStorage];
+    [cookies removeCookiesSinceDate:[NSDate distantPast]];
+
+    NSURLCredentialStorage *credentials = [_configuration URLCredentialStorage];
+    NSDictionary *all = [credentials allCredentials];
+    for (NSURLProtectionSpace *space in all)
+    {
+        for (NSURLCredential *credential in [[all objectForKey:space] allValues])
+            [credentials removeCredential:credential forProtectionSpace:space];
+    }
+
+    [[_configuration URLCache] removeAllCachedResponses];
+    [self flushWithCompletionHandler:completionHandler];
+}
+
 // Returns YES if the caller must deliver the invalidation.
 - (BOOL)_invalidateLocked
 {
@@ -750,6 +797,8 @@ LOCKED_GETTER(int64_t, countOfBytesExpectedToReceive, _countOfBytesExpectedToRec
     curl->easy_setopt(easy, CURLOPT_PROTOCOLS, (long)(CURLPROTO_HTTP | CURLPROTO_HTTPS));
     curl->easy_setopt(easy, CURLOPT_FOLLOWLOCATION, 0L);
     curl->easy_setopt(easy, CURLOPT_SUPPRESS_CONNECT_HEADERS, 1L);
+    if ([_session _wantsFreshConnection])
+        curl->easy_setopt(easy, CURLOPT_FRESH_CONNECT, 1L);
     curl->easy_setopt(easy, CURLOPT_ACCEPT_ENCODING, "");
     curl->easy_setopt(easy, CURLOPT_HEADERFUNCTION, headerCallback);
     curl->easy_setopt(easy, CURLOPT_HEADERDATA, self);
