@@ -6,11 +6,19 @@
 //
 
 #import "NSURLProtectionSpaceInternal.h"
+#import <Foundation/NSCoder.h>
+#import <Foundation/NSException.h>
+#import <Foundation/NSKeyedArchiver.h>
 #import <Foundation/NSString.h>
 #import <CFNetwork/CFURLProtectionSpace.h>
 
 
 @class NSURLProtectionSpaceInternal;
+
+// The public header says only <NSCoding, NSCopying>, and NSKeyedArchiver refuses to archive under secure coding an
+// object whose class does not conform to NSSecureCoding.
+@interface NSURLProtectionSpace () <NSSecureCoding>
+@end
 
 @implementation NSURLProtectionSpace
 
@@ -155,16 +163,66 @@ static CFURLProtectionSpaceAuthenticationSchemeType methodToCFAuthScheme(NSStrin
     return self;
 }
 
+static BOOL decodeOptionalString(NSCoder *coder, NSString *key, NSString **value)
+{
+    *value = [coder decodeObjectOfClass:[NSString class] forKey:key];
+    return ![coder containsValueForKey:key] || [*value isKindOfClass:[NSString class]];
+}
+
+// Keyed coding of the host, port, protocol (a proxy space's proxy type string), whether it is a proxy, the realm and
+// the authentication method: the properties the documentation lists for creating a protection space. Decodes are
+// class-checked, so a space can be unarchived with secure coding required and bad values are refused without it.
+// GUESS: the key names are this implementation's own (the documentation does not give an archive layout), as in
+// NSURLResponse; only archives written by this implementation are promised to decode.
+// GUESS: the distinguished names and the server trust are not archived; a trust cannot be written to an archive,
+// and neither is part of what the creating methods take.
 - (id)initWithCoder:(NSCoder *)coder
 {
-    DEBUG_BREAK();
-    [self release];
-    return nil;
+    if (![coder allowsKeyedCoding])
+    {
+        [self release];
+        return nil;
+    }
+    NSString *host = nil;
+    NSString *protocol = nil;
+    NSString *realm = nil;
+    NSString *method = nil;
+    // A value that is archived but not a string is refused. Decoding without secure coding does not check the class
+    // itself, so the check is made here.
+    if (!decodeOptionalString(coder, @"NS.host", &host) ||
+        !decodeOptionalString(coder, @"NS.protocol", &protocol) ||
+        !decodeOptionalString(coder, @"NS.realm", &realm) ||
+        !decodeOptionalString(coder, @"NS.authenticationMethod", &method))
+    {
+        [self release];
+        return nil;
+    }
+    NSInteger port = (NSInteger)[coder decodeInt64ForKey:@"NS.port"];
+    if ([coder decodeBoolForKey:@"NS.isProxy"])
+    {
+        return [self initWithProxyHost:host port:port type:protocol realm:realm authenticationMethod:method];
+    }
+    return [self initWithHost:host port:port protocol:protocol realm:realm authenticationMethod:method];
 }
 
 - (void)encodeWithCoder:(NSCoder *)coder
 {
-    DEBUG_BREAK();
+    if (![coder allowsKeyedCoding])
+    {
+        [NSException raise:NSInvalidArchiveOperationException format:@"NSURLProtectionSpace can only be encoded by a keyed archiver."];
+    }
+    if ([self host] != nil)
+    {
+        [coder encodeObject:[self host] forKey:@"NS.host"];
+    }
+    [coder encodeInt64:(int64_t)[self port] forKey:@"NS.port"];
+    [coder encodeObject:[self protocol] forKey:@"NS.protocol"];
+    [coder encodeBool:[self isProxy] forKey:@"NS.isProxy"];
+    if ([self realm] != nil)
+    {
+        [coder encodeObject:[self realm] forKey:@"NS.realm"];
+    }
+    [coder encodeObject:[self authenticationMethod] forKey:@"NS.authenticationMethod"];
 }
 
 - (void)dealloc
