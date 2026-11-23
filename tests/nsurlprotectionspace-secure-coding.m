@@ -201,6 +201,18 @@ int main(int argc, char **argv) {
         checkServer(@"example.test", 0, NSURLProtectionSpaceHTTP, nil, NSURLAuthenticationMethodDefault);
         checkServer(@"example.test", 8443, NSURLProtectionSpaceHTTPS, @"unicode é世", NSURLAuthenticationMethodNTLM);
 
+        // The values of the authentication method constants are their names (printed on macOS 26.7.3 and on 10.14.4
+        // x86_64); a wrong HTTP basic value once made it indistinguishable from the default method. The i386 slice of
+        // 10.14.4 gives HTTP basic the value of the default method (observed), so the checks that need the two to
+        // differ are skipped when they are equal.
+        BOOL basicIsDefault = [NSURLAuthenticationMethodHTTPBasic isEqualToString:NSURLAuthenticationMethodDefault];
+#ifndef __i386__
+        CHECK(!basicIsDefault);
+        CHECK([NSURLAuthenticationMethodHTTPBasic isEqualToString:@"NSURLAuthenticationMethodHTTPBasic"]);
+#endif
+        CHECK([NSURLAuthenticationMethodHTTPDigest isEqualToString:@"NSURLAuthenticationMethodHTTPDigest"]);
+        CHECK([NSURLAuthenticationMethodDefault isEqualToString:@"NSURLAuthenticationMethodDefault"]);
+
         // Every documented authentication method survives.
         NSArray *methods = @[NSURLAuthenticationMethodDefault, NSURLAuthenticationMethodHTTPBasic, NSURLAuthenticationMethodHTTPDigest,
                              NSURLAuthenticationMethodHTMLForm, NSURLAuthenticationMethodNTLM, NSURLAuthenticationMethodNegotiate,
@@ -256,7 +268,7 @@ int main(int argc, char **argv) {
             for (int i = 0; i < 8; i++) {
                 NSURLProtectionSpace *s = [[[NSURLProtectionSpace alloc] initWithHost:@"h.test" port:7 protocol:NSURLProtectionSpaceHTTPS realm:@"r" authenticationMethod:methods[i]] autorelease];
                 NSDictionary *e = layoutOf(s, NO);
-                CHECK([e[@"scheme"] intValue] == i + 1);
+                CHECK([e[@"scheme"] intValue] == i + 1 || (i == 1 && basicIsDefault));
                 CHECK([e[@"realm"] isEqual:@"r"]);
                 CHECK([[(NSURLProtectionSpace *)roundTrip(s, YES) authenticationMethod] isEqualToString:methods[i]]);
             }

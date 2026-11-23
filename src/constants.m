@@ -3,7 +3,7 @@
 NSString * const NSURLAuthenticationMethodClientCertificate = @"NSURLAuthenticationMethodClientCertificate";
 NSString * const NSURLAuthenticationMethodDefault = @"NSURLAuthenticationMethodDefault";
 NSString * const NSURLAuthenticationMethodHTMLForm = @"NSURLAuthenticationMethodHTMLForm";
-NSString * const NSURLAuthenticationMethodHTTPBasic = @"NSURLAuthenticationMethodDefault";
+NSString * const NSURLAuthenticationMethodHTTPBasic = @"NSURLAuthenticationMethodHTTPBasic";
 NSString * const NSURLAuthenticationMethodHTTPDigest = @"NSURLAuthenticationMethodHTTPDigest";
 NSString * const NSURLAuthenticationMethodNTLM = @"NSURLAuthenticationMethodNTLM";
 NSString * const NSURLAuthenticationMethodNegotiate = @"NSURLAuthenticationMethodNegotiate";
