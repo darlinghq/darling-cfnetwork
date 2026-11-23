@@ -3,10 +3,9 @@
 // NSSecureCoding for NSCachedURLResponse, which the documentation lists as conforming to NSCoding and
 // NSSecureCoding (https://developer.apple.com/documentation/foundation/cachedurlresponse): +supportsSecureCoding,
 // and round trips of the response, data, user info and storage policy through a secure and a default
-// NSKeyedArchiver. The documentation gives no archive layout, so the layout is not tested; the file checks the
-// public contract and is meant to pass on macOS as well. The malformed-archive checks name this implementation's
-// own keys and run only with the argument "strict" (on Darling). Cached responses with empty data are not
-// covered: -[NSCachedURLResponse data] asserts for them in this implementation.
+// NSKeyedArchiver, with data of every size including none. The documentation gives no archive layout, so the layout is
+// not tested here; the file checks the public contract and passes on macOS as well. The archive layout (that of
+// macOS), archives written by macOS and the malformed-archive checks are in nscachedurlresponse-macos-archive.m.
 #import <Foundation/Foundation.h>
 #include <stdio.h>
 #include <string.h>
@@ -38,42 +37,8 @@ static id roundTrip(id obj, BOOL secure) {
     return result;
 }
 
-// Archives with arbitrary stored fields under the class name NSCachedURLResponse, to make malformed archives.
-@interface Spoof : NSObject <NSSecureCoding> { @public NSDictionary *objects; NSDictionary *ints; }
-@end
-@implementation Spoof
-+ (BOOL)supportsSecureCoding { return YES; }
-- (void)encodeWithCoder:(NSCoder *)coder {
-    for (NSString *key in ints) [coder encodeInt64:[ints[key] longLongValue] forKey:key];
-    for (NSString *key in objects) [coder encodeObject:objects[key] forKey:key];
-}
-- (id)initWithCoder:(NSCoder *)coder { return nil; }
-@end
-
-static id decodeSpoof(NSDictionary *objects, NSDictionary *ints, BOOL secure) {
-    Spoof *s = [[[Spoof alloc] init] autorelease];
-    s->objects = objects; s->ints = ints;
-    NSKeyedArchiver *a = [[NSKeyedArchiver alloc] initRequiringSecureCoding:YES];
-    [a setClassName:@"NSCachedURLResponse" forClass:[Spoof class]];
-    [a encodeObject:s forKey:NSKeyedArchiveRootObjectKey];
-    [a finishEncoding];
-    NSData *data = [[[a encodedData] retain] autorelease];
-    [a release];
-    NSKeyedUnarchiver *u = [[[NSKeyedUnarchiver alloc] initForReadingFromData:data error:NULL] autorelease];
-    [u setRequiresSecureCoding:secure];
-    id r = nil;
-    @try {
-        r = [u decodeObjectOfClass:[NSCachedURLResponse class] forKey:NSKeyedArchiveRootObjectKey];
-    } @catch (NSException *exception) {
-        r = nil;
-    }
-    [u finishDecoding];
-    return r;
-}
-
 int main(int argc, char **argv) {
     @autoreleasepool {
-        BOOL strict = argc > 1 && strcmp(argv[1], "strict") == 0;
         NSURL *url = [NSURL URLWithString:@"http://example.test/page.html"];
         NSData *body = [@"<html>cached body</html>" dataUsingEncoding:NSUTF8StringEncoding];
 
@@ -133,31 +98,12 @@ int main(int argc, char **argv) {
         }
         CHECK(refused == nil);
 
-        if (strict) {
-            // This implementation also accepts arrays and dates in a user info under secure coding.
-            NSDictionary *wide = @{@"list": @[@"a", @2], @"when": [NSDate dateWithTimeIntervalSince1970:1000]};
-            NSCachedURLResponse *wideCached = [[[NSCachedURLResponse alloc] initWithResponse:http data:body userInfo:wide storagePolicy:NSURLCacheStorageAllowed] autorelease];
-            for (int secure = 0; secure < 2; secure++) {
-                NSCachedURLResponse *wideBack = roundTrip(wideCached, secure);
-                CHECK(wideBack != nil && [wideBack.userInfo isEqualToDictionary:wide] && [wideBack.data isEqualToData:body]);
-            }
-            // GUESS keys of src/URL/NSURLCache.m. Stored values of the wrong class, a missing response or data,
-            // and a storage policy outside the three documented values are not accepted.
-            NSDictionary *good = @{@"NS.response": plain, @"NS.data": body};
-            // Without secure coding the unarchiver does not check classes itself, so both modes are run.
-            for (int secure = 0; secure < 2; secure++) {
-                CHECK(decodeSpoof(good, @{}, secure) != nil);
-                CHECK(decodeSpoof(@{@"NS.data": body}, @{}, secure) == nil);
-                CHECK(decodeSpoof(@{@"NS.response": plain}, @{}, secure) == nil);
-                CHECK(decodeSpoof(@{@"NS.response": @"http://example.test/", @"NS.data": body}, @{}, secure) == nil);
-                CHECK(decodeSpoof(@{@"NS.response": plain, @"NS.data": @"text"}, @{}, secure) == nil);
-                CHECK(decodeSpoof(@{@"NS.response": plain, @"NS.data": body, @"NS.userInfo": url}, @{}, secure) == nil);
-                CHECK(decodeSpoof(@{@"NS.response": plain, @"NS.data": body, @"NS.userInfo": @[@"a"]}, @{}, secure) == nil);
-                CHECK(decodeSpoof(good, @{@"NS.storagePolicy": @3}, secure) == nil);
-                CHECK(decodeSpoof(good, @{@"NS.storagePolicy": @(-1)}, secure) == nil);
-                NSCachedURLResponse *memoryOnly = decodeSpoof(good, @{@"NS.storagePolicy": @1}, secure);
-                CHECK(memoryOnly.storagePolicy == NSURLCacheStorageAllowedInMemoryOnly);
-            }
+        // Empty data: a cached response may have no body.
+        NSCachedURLResponse *emptyCached = [[[NSCachedURLResponse alloc] initWithResponse:http data:[NSData data] userInfo:nil storagePolicy:NSURLCacheStorageAllowed] autorelease];
+        CHECK([emptyCached.data length] == 0);
+        for (int secure = 0; secure < 2; secure++) {
+            NSCachedURLResponse *emptyBack = roundTrip(emptyCached, secure);
+            CHECK(emptyBack != nil && [emptyBack.data length] == 0 && [emptyBack.response.URL isEqual:url]);
         }
 
         if (failures) { printf("%d failure(s)\n", failures); return 1; }
