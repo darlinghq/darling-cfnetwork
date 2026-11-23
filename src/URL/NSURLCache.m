@@ -91,7 +91,10 @@ static NSUInteger NSURLCacheDefaultDiskCapacity = 10000000;
 // lists for NSCachedURLResponse. Decodes are class-checked, so a cached response can be unarchived with secure
 // coding required.
 // GUESS: the key names are this implementation's own (the documentation gives no archive layout), as in
-// NSURLResponse; only archives written by this implementation are promised to decode.
+// NSURLResponse; only archives written by this implementation are promised to decode. macOS 26.7.3 and 10.14.4 write
+// a different layout (private numbered and _CFCachedURLResponse... keys around the private archive layout of the
+// response, which this implementation does not write either), so archives are not exchanged with macOS in either
+// direction; a user info holding arrays or dates is also accepted here under secure coding, where macOS refuses it.
 // GUESS: under secure coding the user info may hold only property list classes (dictionaries, arrays, strings,
 // numbers, data and dates); the documentation does not say which classes a user info may carry.
 + (BOOL)supportsSecureCoding

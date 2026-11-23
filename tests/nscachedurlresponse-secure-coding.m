@@ -82,7 +82,9 @@ int main(int argc, char **argv) {
 
         // An HTTP response with user info, for every storage policy and both archivers.
         NSHTTPURLResponse *http = [[[NSHTTPURLResponse alloc] initWithURL:url statusCode:200 HTTPVersion:@"HTTP/1.1" headerFields:@{@"Content-Type": @"text/html; charset=utf-8", @"X-Probe": @"1"}] autorelease];
-        NSDictionary *info = @{@"name": @"value", @"count": @3, @"list": @[@"a", @2], @"nested": @{@"k": @"v"}, @"blob": [NSData dataWithBytes:"\x01\x02" length:2], @"when": [NSDate dateWithTimeIntervalSince1970:1000]};
+        // macOS 26.7.3 and 10.14.4 decode a user info holding an array or a date only without secure coding (a secure
+        // unarchiver returns an invalid object), so those values are in the Darling-only checks below.
+        NSDictionary *info = @{@"name": @"value", @"count": @3, @"nested": @{@"k": @"v"}, @"blob": [NSData dataWithBytes:"" length:2]};
         NSURLCacheStoragePolicy policies[] = {NSURLCacheStorageAllowed, NSURLCacheStorageAllowedInMemoryOnly, NSURLCacheStorageNotAllowed};
         for (int i = 0; i < 3; i++) {
             NSCachedURLResponse *cached = [[[NSCachedURLResponse alloc] initWithResponse:http data:body userInfo:info storagePolicy:policies[i]] autorelease];
@@ -132,6 +134,13 @@ int main(int argc, char **argv) {
         CHECK(refused == nil);
 
         if (strict) {
+            // This implementation also accepts arrays and dates in a user info under secure coding.
+            NSDictionary *wide = @{@"list": @[@"a", @2], @"when": [NSDate dateWithTimeIntervalSince1970:1000]};
+            NSCachedURLResponse *wideCached = [[[NSCachedURLResponse alloc] initWithResponse:http data:body userInfo:wide storagePolicy:NSURLCacheStorageAllowed] autorelease];
+            for (int secure = 0; secure < 2; secure++) {
+                NSCachedURLResponse *wideBack = roundTrip(wideCached, secure);
+                CHECK(wideBack != nil && [wideBack.userInfo isEqualToDictionary:wide] && [wideBack.data isEqualToData:body]);
+            }
             // GUESS keys of src/URL/NSURLCache.m. Stored values of the wrong class, a missing response or data,
             // and a storage policy outside the three documented values are not accepted.
             NSDictionary *good = @{@"NS.response": plain, @"NS.data": body};
