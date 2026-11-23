@@ -52,13 +52,10 @@ __attribute__((visibility("hidden")))
     NSLock *_lock;
     NSMutableSet *_tasks;
     NSUInteger _nextTaskIdentifier;
-    BOOL _freshConnections;
 }
 
 - (id)initWithConfiguration:(NSURLSessionConfiguration *)configuration delegate:(id <NSURLSessionDelegate>)delegate delegateQueue:(NSOperationQueue *)queue;
 - (void)_markShared;
-// Whether transfers must not reuse a connection that an earlier one left behind (set by reset and flush).
-- (BOOL)_wantsFreshConnection;
 
 @end
 

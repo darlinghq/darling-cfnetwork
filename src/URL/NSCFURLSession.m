@@ -296,35 +296,31 @@ static void deliverMetrics(__NSCFURLSession *session, NSURLSessionTask *task, NS
     }];
 }
 
-// Documented: both calls make future requests use a new connection, and the handler runs on the delegate queue.
-// The libcurl transport keeps one connection cache for all sessions and cannot close one session's idle
-// connections, so the session marks every later transfer as fresh-connection instead.
-// GUESS: "future requests" is taken as all of them, not only the next one; the documentation does not say, and
-// a later request reusing a connection that predates the call is the one thing it rules out.
-// Side effect: the fresh connections of such a session keep entering the connection cache that all sessions share,
-// so idle connections of other sessions can be pushed out of it.
-- (BOOL)_wantsFreshConnection
+// Runs the completion handler of flush and reset. Observed on macOS 26.7.3 and 10.14.4 (black-box probe,
+// tests/nsurlsession-reset-flush.m): the handler is called asynchronously on a queue of the session's own, not on
+// the delegate queue, and a nil handler is accepted.
+static void deliverFlushCompletion(void (^completionHandler)(void))
 {
-    [_lock lock];
-    BOOL fresh = _freshConnections;
-    [_lock unlock];
-    return fresh;
+    if (completionHandler == nil)
+        return;
+    static dispatch_once_t once;
+    static dispatch_queue_t queue;
+    dispatch_once(&once, ^{
+        queue = dispatch_queue_create("org.darlinghq.NSURLSession.work", DISPATCH_QUEUE_SERIAL);
+    });
+    dispatch_async(queue, completionHandler);
 }
 
-// Documented: flushes cookies and credentials to disk, clears transient caches, and ensures future requests
-// use a new TCP connection. The cookie store already writes through to disk on every change and the credential
-// store has no disk file, and the cache has no separate transient part, so only the connection part has an effect.
+// Observed on macOS 26.7.3 and 10.14.4: a request sent after a flush or a reset keeps using the session's idle
+// connection (the documentation says later requests use a new one, but the observation is what applications see).
+// The cookie store already writes through to disk on every change, the credential store has no disk file, and the
+// cache has no separate transient part, so there is nothing else to flush.
 - (void)flushWithCompletionHandler:(void (^)(void))completionHandler
 {
-    [_lock lock];
-    _freshConnections = YES;
-    [_lock unlock];
-    if (completionHandler != nil)
-        [self _addDelegateBlock:completionHandler];
+    deliverFlushCompletion(completionHandler);
 }
 
-// Documented: empties all cookies, caches and credential stores, removes disk files, flushes in-progress
-// downloads to disk, and ensures future requests use a new connection. Only the stores of this session's
+// Documented: empties all cookies, caches and credential stores and flushes. Only the stores of this session's
 // configuration are emptied. Downloads are written to disk as they arrive, so there is nothing to flush for them.
 - (void)resetWithCompletionHandler:(void (^)(void))completionHandler
 {
@@ -797,8 +793,6 @@ LOCKED_GETTER(int64_t, countOfBytesExpectedToReceive, _countOfBytesExpectedToRec
     curl->easy_setopt(easy, CURLOPT_PROTOCOLS, (long)(CURLPROTO_HTTP | CURLPROTO_HTTPS));
     curl->easy_setopt(easy, CURLOPT_FOLLOWLOCATION, 0L);
     curl->easy_setopt(easy, CURLOPT_SUPPRESS_CONNECT_HEADERS, 1L);
-    if ([_session _wantsFreshConnection])
-        curl->easy_setopt(easy, CURLOPT_FRESH_CONNECT, 1L);
     curl->easy_setopt(easy, CURLOPT_ACCEPT_ENCODING, "");
     curl->easy_setopt(easy, CURLOPT_HEADERFUNCTION, headerCallback);
     curl->easy_setopt(easy, CURLOPT_HEADERDATA, self);

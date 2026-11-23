@@ -2,11 +2,13 @@
 #import <Foundation/Foundation.h>
 
 // -[NSURLSession resetWithCompletionHandler:] and -[NSURLSession flushWithCompletionHandler:].
-// Documented contract: reset empties all cookies, caches and credential stores and ensures later
-// requests use a new socket; flush ensures later requests use a new TCP connection; both call the
-// handler on the delegate queue.
+// Documented contract: reset empties all cookies, caches and credential stores of the session.
 // https://developer.apple.com/documentation/foundation/urlsession/reset(completionhandler:)
 // https://developer.apple.com/documentation/foundation/urlsession/flush(completionhandler:)
+// Black-box observations of macOS 26.7.3 and 10.14.4 (the same on both) that the checks below pin: the handlers are
+// called asynchronously on a queue of the session's own, not on the delegate queue; a nil handler is accepted; flush
+// leaves the stores alone; and a request after flush or reset still uses the connection the session already had
+// (the documentation says a new one; the observation is the behaviour).
 // Server: tests/urlsession-test-server.py; its /peer path answers with the client port of the
 // connection, which tells connections apart.
 // usage: nsurlsession-reset-flush HTTP_BASE
@@ -77,8 +79,8 @@ int main(int argc, char **argv)
         NSURLCredential *credential = [NSURLCredential credentialWithUser:@"user" password:@"secret" persistence:NSURLCredentialPersistencePermanent];
         NSHTTPCookie *cookie = [NSHTTPCookie cookieWithProperties:@{ NSHTTPCookieName: @"reset-test", NSHTTPCookieValue: @"1", NSHTTPCookieDomain: @"reset.example", NSHTTPCookiePath: @"/" }];
         NSURLRequest *cachedRequest = [NSURLRequest requestWithURL:[NSURL URLWithString:@"http://reset.example/cached"]];
-        NSURLResponse *cachedResponse = [[NSURLResponse alloc] initWithURL:[cachedRequest URL] MIMEType:@"text/plain" expectedContentLength:2 textEncodingName:nil];
-        NSCachedURLResponse *entry = [[NSCachedURLResponse alloc] initWithResponse:cachedResponse data:[NSData dataWithBytes:"hi" length:2]];
+        NSURLResponse *cachedResponse = [[NSHTTPURLResponse alloc] initWithURL:[cachedRequest URL] statusCode:200 HTTPVersion:@"HTTP/1.1" headerFields:@{ @"Cache-Control": @"max-age=100" }];
+        NSCachedURLResponse *entry = [[NSCachedURLResponse alloc] initWithResponse:cachedResponse data:[NSData dataWithBytes:"hi" length:2] userInfo:nil storagePolicy:NSURLCacheStorageAllowedInMemoryOnly];
 
         void (^populate)(void) = ^{
             [credentials setCredential:credential forProtectionSpace:space];
@@ -99,29 +101,34 @@ int main(int argc, char **argv)
         NSString *second = peer(session, base);
         expect(first != nil && [first isEqualToString:second], @"two requests share a connection before the call");
 
-        // flush: later requests use a new connection, the handler runs on the delegate queue, the stores stay
+        // flush: the handler runs, not on the delegate queue; the stores stay; the connection is kept
         NSOperationQueue *ran = callAndWait(^(void (^handler)(void)) { [session flushWithCompletionHandler:handler]; });
-        expect(ran == delegateQueue, @"flush handler runs on the delegate queue");
+        expect(ran != delegateQueue, @"flush handler does not run on the delegate queue");
         NSString *afterFlush = peer(session, base);
-        expect(afterFlush != nil && ![afterFlush isEqualToString:first], @"a request after flush uses a new connection");
+        expect(afterFlush != nil && [afterFlush isEqualToString:first], @"a request after flush uses the existing connection");
         expect([[credentials allCredentials] count] == 1 && cookiePresent() && [cache cachedResponseForRequest:cachedRequest] != nil, @"flush leaves cookies, credentials and cache alone");
 
-        // reset: all three stores are emptied, later requests use a new connection, handler on the delegate queue
+        // reset: all three stores are emptied, the handler does not run on the delegate queue
         ran = callAndWait(^(void (^handler)(void)) { [session resetWithCompletionHandler:handler]; });
-        expect(ran == delegateQueue, @"reset handler runs on the delegate queue");
+        expect(ran != delegateQueue, @"reset handler does not run on the delegate queue");
         expect([[credentials allCredentials] count] == 0, @"reset empties the credential store");
         expect([credentials defaultCredentialForProtectionSpace:space] == nil, @"reset leaves no default credential");
         expect(!cookiePresent(), @"reset empties the cookie store");
         expect([cache cachedResponseForRequest:cachedRequest] == nil, @"reset empties the cache");
         NSString *afterReset = peer(session, base);
-        expect(afterReset != nil && ![afterReset isEqualToString:first] && ![afterReset isEqualToString:afterFlush], @"a request after reset uses a new connection");
+        expect(afterReset != nil && [afterReset isEqualToString:first], @"a request after reset uses the existing connection");
 
         // a session with no stores of its own has nothing to empty and still calls the handler
         NSURLSession *bare = [NSURLSession sessionWithConfiguration:[NSURLSessionConfiguration ephemeralSessionConfiguration] delegate:nil delegateQueue:delegateQueue];
         populate();
         ran = callAndWait(^(void (^handler)(void)) { [bare resetWithCompletionHandler:handler]; });
-        expect(ran == delegateQueue, @"reset on a session without stores calls the handler on its delegate queue");
+        expect(ran != delegateQueue, @"reset on a session without stores still calls the handler");
         expect([[credentials allCredentials] count] == 1 && cookiePresent(), @"the stores of another session are not emptied");
+
+        // a nil handler is accepted
+        void (^none)(void) = nil;
+        [session flushWithCompletionHandler:none];
+        [session resetWithCompletionHandler:none];
 
         [session invalidateAndCancel];
         [bare invalidateAndCancel];
