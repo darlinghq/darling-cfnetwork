@@ -12,10 +12,22 @@
 #include <stdio.h>
 #include "CFRuntime.h"
 #include "CFMiscUtils.h"
+#include "CFURLStorageSessionInternal.h"
+#include "CFURLRequestInternal.h"
 
 #define STACK_BUFFER_SIZE 256
 
 // http://www.w3.org/Protocols/rfc2616/rfc2616-sec9.html
+// Keys of NSURLProtocol properties (_CFURLRequestSetProtocolProperty) that
+// loaders on macOS read. The strings are Darling's own; the keys are used by
+// name only, and the loader does not act on them yet:
+// - the partition of the cache that the response is kept in (a CFString);
+const CFStringRef _kCFURLCachePartitionKey = CFSTR("_kCFURLCachePartitionKey");
+// - whether responses to POST requests may be cached too (a CFBoolean);
+const CFStringRef kCFURLRequestAllowAllPOSTCaching = CFSTR("kCFURLRequestAllowAllPOSTCaching");
+// - whether content is decoded whatever the URL's extension (a CFBoolean).
+const CFStringRef kCFURLRequestContentDecoderSkipURLCheck = CFSTR("kCFURLRequestContentDecoderSkipURLCheck");
+
 const CFStringRef kCFURLRequestGETMethod = CFSTR("GET");
 const CFStringRef kCFURLRequestPOSTMethod = CFSTR("POST");
 const CFStringRef kCFURLRequestOPTIONSMethod = CFSTR("OPTIONS");
@@ -47,6 +59,14 @@ struct _CFURLRequest {
     Boolean _shouldHandleCookies;
     Boolean _shouldUseHTTPPipelining;
 
+    CFURLRequestPriority _priority;
+    // NSURLProtocol's properties of the request, made on first use
+    CFMutableDictionaryRef _protocolProperties;
+    CFURLStorageSessionRef _storageSession;
+    _CFURLRequestFlag _flags;
+    CFArrayRef _contentDispositionEncodingFallbackArray;
+    CFStringRef _boundInterfaceIdentifier;
+
     Boolean _mutable;
 };
 
@@ -66,8 +86,50 @@ static void __CFURLRequestDeallocate(CFTypeRef cf) {
     if (request->_values) {
         CFRelease(request->_values);
     }
+    if (request->_protocolProperties) {
+        CFRelease(request->_protocolProperties);
+    }
+    if (request->_storageSession) {
+        CFRelease(request->_storageSession);
+    }
+    if (request->_contentDispositionEncodingFallbackArray) {
+        CFRelease(request->_contentDispositionEncodingFallbackArray);
+    }
+    if (request->_boundInterfaceIdentifier) {
+        CFRelease(request->_boundInterfaceIdentifier);
+    }
 }
 
+static Boolean __CFURLRequestOptionalEqual(CFTypeRef value1, CFTypeRef value2) {
+    if (value1 == NULL || value2 == NULL) {
+        return value1 == value2;
+    }
+    return CFEqual(value1, value2);
+}
+
+// The same fields with the same values; field names are case-insensitive.
+static Boolean __CFURLRequestHTTPFieldsEqual(CFURLRequestRef request1, CFURLRequestRef request2) {
+    CFIndex count = CFArrayGetCount(request1->_keys);
+    if (count != CFArrayGetCount(request2->_keys)) {
+        return false;
+    }
+    for (CFIndex i = 0; i < count; i++) {
+        CFIndex other = CFURLRequestFirstFieldIndex(request2, CFArrayGetValueAtIndex(request1->_keys, i), 0);
+        if (other == kCFNotFound ||
+            !CFEqual(CFArrayGetValueAtIndex(request1->_values, i), CFArrayGetValueAtIndex(request2->_values, other))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static CFIndex __CFURLRequestProtocolPropertyCount(CFURLRequestRef request) {
+    return request->_protocolProperties ? CFDictionaryGetCount(request->_protocolProperties) : 0;
+}
+
+// What makes two requests equal, as observed on macOS 26.7.3 (test:
+// cfnetwork-request-private-settings): the body data, the timeout, the
+// network service type, pipelining and the HSTS flags don't count.
 static Boolean __CFURLRequestEqual(CFTypeRef cf1, CFTypeRef cf2) {
     CFURLRequestRef request1 = (CFURLRequestRef)cf1;
     CFURLRequestRef request2 = (CFURLRequestRef)cf2;
@@ -76,26 +138,30 @@ static Boolean __CFURLRequestEqual(CFTypeRef cf1, CFTypeRef cf2) {
         return true;
     }
 
-    if (request1->_cachePolicy != request2->_cachePolicy) {
+    if (request1->_cachePolicy != request2->_cachePolicy ||
+        request1->_shouldHandleCookies != request2->_shouldHandleCookies ||
+        request1->_allowCellularAccess != request2->_allowCellularAccess ||
+        request1->_allowsExpensiveNetworkAccess != request2->_allowsExpensiveNetworkAccess ||
+        request1->_allowsConstrainedNetworkAccess != request2->_allowsConstrainedNetworkAccess ||
+        request1->_priority != request2->_priority ||
+        request1->_stream != request2->_stream ||
+        (request1->_flags & _kCFURLRequestFlagsAffectingEquality) !=
+            (request2->_flags & _kCFURLRequestFlagsAffectingEquality)) {
         return false;
     }
 
-    if (request1->_timeout != request2->_timeout) {
+    if (!__CFURLRequestOptionalEqual(request1->_url, request2->_url) ||
+        !__CFURLRequestOptionalEqual(request1->_mainDocument, request2->_mainDocument) ||
+        !CFEqual(request1->_method, request2->_method) ||
+        !__CFURLRequestHTTPFieldsEqual(request1, request2)) {
         return false;
     }
 
-    if ((request1->_url == NULL && request2->_url != NULL) ||
-        (request1->_url != NULL && request2->_url == NULL)) {
+    if (__CFURLRequestProtocolPropertyCount(request1) != __CFURLRequestProtocolPropertyCount(request2)) {
         return false;
     }
-
-    if (request1->_url != NULL &&
-        request2->_url != NULL &&
-        !CFEqual(request1->_url, request2->_url)) {
-        return false;
-    }
-
-    if (!CFEqual(request1->_method, request2->_method)) {
+    if (__CFURLRequestProtocolPropertyCount(request1) != 0 &&
+        !CFEqual(request1->_protocolProperties, request2->_protocolProperties)) {
         return false;
     }
 
@@ -104,7 +170,7 @@ static Boolean __CFURLRequestEqual(CFTypeRef cf1, CFTypeRef cf2) {
 
 static CFHashCode __CFURLRequestHash(CFTypeRef cf) {
     CFURLRequestRef request = (CFURLRequestRef)cf;
-    return CFHash(request->_method) ^ CFHash(request->_url);
+    return (request->_url ? CFHash(request->_url) : 0) ^ (CFHashCode)request->_cachePolicy;
 }
 
 static CFTypeID __kCFURLRequestTypeID = _kCFRuntimeNotATypeID;
@@ -436,6 +502,17 @@ CFMutableURLRequestRef CFURLRequestCreateMutableCopy(CFAllocatorRef allocator, C
     newReq->_shouldHandleCookies = request->_shouldHandleCookies;
     newReq->_shouldUseHTTPPipelining = request->_shouldUseHTTPPipelining;
 
+    newReq->_priority = request->_priority;
+    newReq->_protocolProperties = request->_protocolProperties
+        ? CFDictionaryCreateMutableCopy(allocator, 0, request->_protocolProperties) : NULL;
+    newReq->_storageSession = request->_storageSession
+        ? (CFURLStorageSessionRef)CFRetain(request->_storageSession) : NULL;
+    newReq->_flags = request->_flags;
+    newReq->_contentDispositionEncodingFallbackArray = request->_contentDispositionEncodingFallbackArray
+        ? (CFArrayRef)CFRetain(request->_contentDispositionEncodingFallbackArray) : NULL;
+    newReq->_boundInterfaceIdentifier = request->_boundInterfaceIdentifier
+        ? (CFStringRef)CFRetain(request->_boundInterfaceIdentifier) : NULL;
+
     newReq->_mutable = true;
 
     return (CFMutableURLRequestRef)newReq;
@@ -615,6 +692,12 @@ Boolean CFURLRequestSetHTTPBody(CFMutableURLRequestRef request, CFDataRef data) 
         }
         request->_body = data != NULL ? CFRetain(data) : NULL;
     }
+    // A request carries either a body or a body stream, never both: setting
+    // a body discards the stream (see -[NSMutableURLRequest setHTTPBody:]).
+    if (data != NULL && request->_stream != NULL) {
+        CFRelease(request->_stream);
+        request->_stream = NULL;
+    }
     return true;
 }
 
@@ -626,9 +709,24 @@ Boolean CFURLRequestSetHTTPBodyStream(CFMutableURLRequestRef request, CFReadStre
         if (request->_stream != NULL) {
             CFRelease(request->_stream);
         }
-        request->_stream = (CFReadStreamRef)CFRetain(stream);
+        request->_stream = stream != NULL ? (CFReadStreamRef)CFRetain(stream) : NULL;
+    }
+    // Setting a body stream discards the body data
+    // (see -[NSMutableURLRequest setHTTPBodyStream:]).
+    if (stream != NULL && request->_body != NULL) {
+        CFRelease(request->_body);
+        request->_body = NULL;
     }
     return true;
+}
+
+// The names WebKit's CFNetwork loader uses for the two setters above.
+void CFURLRequestSetHTTPRequestBody(CFMutableURLRequestRef request, CFDataRef body) {
+    CFURLRequestSetHTTPBody(request, body);
+}
+
+void CFURLRequestSetHTTPRequestBodyStream(CFMutableURLRequestRef request, CFReadStreamRef bodyStream) {
+    CFURLRequestSetHTTPBodyStream(request, bodyStream);
 }
 
 Boolean CFURLRequestHandleCookies(CFMutableURLRequestRef request, Boolean enabled) {
@@ -645,6 +743,76 @@ Boolean CFURLRequestUseHTTPPipelining(CFMutableURLRequestRef request, Boolean en
     }
     request->_shouldUseHTTPPipelining = enabled;
     return true;
+}
+
+// The priority of the load, from -1 (lowest) to 4 (highest), as WebKit maps
+// its load priorities. A request that was not given one has 0; that default
+// was not observed on macOS.
+CFURLRequestPriority CFURLRequestGetRequestPriority(CFURLRequestRef request) {
+    return request->_priority;
+}
+
+void CFURLRequestSetRequestPriority(CFURLRequestRef request, CFURLRequestPriority priority) {
+    if (request->_mutable == false) {
+        return;
+    }
+    ((struct _CFURLRequest *)request)->_priority = priority;
+}
+
+// Whether the request may be pipelined. The second flag, for requests other
+// than GET and HEAD, is not kept: the loader does not pipeline at all.
+void CFURLRequestSetShouldPipelineHTTP(CFURLRequestRef request, Boolean shouldPipeline, Boolean shouldPipelineNonIdempotent) {
+    CFURLRequestUseHTTPPipelining((CFMutableURLRequestRef)request, shouldPipeline);
+}
+
+// A hint that the first callbacks of the load may be made synchronously. The
+// loader always starts loads asynchronously, which the hint allows.
+void CFURLRequestSetShouldStartSynchronously(CFURLRequestRef request, Boolean shouldStartSynchronously) {
+}
+
+CFTypeRef _CFURLRequestCopyProtocolPropertyForKey(CFURLRequestRef request, CFStringRef key) {
+    if (key == NULL || request->_protocolProperties == NULL) {
+        return NULL;
+    }
+    CFTypeRef value = CFDictionaryGetValue(request->_protocolProperties, key);
+    return value ? CFRetain(value) : NULL;
+}
+
+// A NULL value removes the property. Immutable requests take properties too
+// (observed on macOS 26.7.3; test: cfnetwork-request-private-settings).
+void _CFURLRequestSetProtocolProperty(CFURLRequestRef request, CFStringRef key, CFTypeRef value) {
+    if (key == NULL) {
+        return;
+    }
+    struct _CFURLRequest *mutableRequest = (struct _CFURLRequest *)request;
+    if (value == NULL) {
+        if (mutableRequest->_protocolProperties) {
+            CFDictionaryRemoveValue(mutableRequest->_protocolProperties, key);
+        }
+        return;
+    }
+    if (mutableRequest->_protocolProperties == NULL) {
+        mutableRequest->_protocolProperties = CFDictionaryCreateMutable(CFGetAllocator(request), 0,
+            &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    }
+    CFDictionarySetValue(mutableRequest->_protocolProperties, key, value);
+}
+
+void _CFURLRequestSetStorageSession(CFMutableURLRequestRef request, CFURLStorageSessionRef session) {
+    if (request->_mutable == false) {
+        return;
+    }
+    if (session) {
+        CFRetain(session);
+    }
+    if (request->_storageSession) {
+        CFRelease(request->_storageSession);
+    }
+    request->_storageSession = session;
+}
+
+CFURLStorageSessionRef __CFURLRequestGetStorageSession(CFURLRequestRef request) {
+    return request->_storageSession;
 }
 
 CFHTTPMessageRef CFHTTPMessageCreateRequestFromURLRequest(CFAllocatorRef allocator, CFURLRequestRef request) {
@@ -796,4 +964,52 @@ CFPropertyListRef _CFURLRequestCreateParcel(CFURLRequestRef request) {
     PARCEL_SET_ENUM(parcel, request->_serviceType, "serviceType");
 
     return parcel;
+}
+
+Boolean _CFURLRequestGetFlag(CFURLRequestRef request, _CFURLRequestFlag flag) {
+    return (request->_flags & flag) != 0;
+}
+
+void _CFURLRequestSetFlag(CFMutableURLRequestRef request, _CFURLRequestFlag flag, Boolean value) {
+    if (!request->_mutable) {
+        return;
+    }
+    if (value) {
+        request->_flags |= flag;
+    } else {
+        request->_flags &= ~flag;
+    }
+}
+
+CFArrayRef _CFURLRequestGetContentDispositionEncodingFallbackArray(CFURLRequestRef request) {
+    return request->_contentDispositionEncodingFallbackArray;
+}
+
+void _CFURLRequestSetContentDispositionEncodingFallbackArray(CFMutableURLRequestRef request, CFArrayRef encodings) {
+    if (!request->_mutable) {
+        return;
+    }
+    CFArrayRef copy = encodings ? CFArrayCreateCopy(CFGetAllocator(request), encodings) : NULL;
+    if (request->_contentDispositionEncodingFallbackArray) {
+        CFRelease(request->_contentDispositionEncodingFallbackArray);
+    }
+    request->_contentDispositionEncodingFallbackArray = copy;
+}
+
+CFStringRef _CFURLRequestGetBoundInterfaceIdentifier(CFURLRequestRef request) {
+    return request->_boundInterfaceIdentifier;
+}
+
+void _CFURLRequestSetBoundInterfaceIdentifier(CFMutableURLRequestRef request, CFStringRef identifier) {
+    if (!request->_mutable) {
+        return;
+    }
+    // Kept, not copied, as on macOS 26.7.3.
+    if (identifier) {
+        CFRetain(identifier);
+    }
+    if (request->_boundInterfaceIdentifier) {
+        CFRelease(request->_boundInterfaceIdentifier);
+    }
+    request->_boundInterfaceIdentifier = identifier;
 }

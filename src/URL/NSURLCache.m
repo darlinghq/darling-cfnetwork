@@ -23,8 +23,8 @@
 #import <Foundation/NSDate.h>
 #import <Foundation/NSPathUtilities.h>
 
-static NSUInteger NSURLCacheDefaultMemoryCapacity = 512000;
-static NSUInteger NSURLCacheDefaultDiskCapacity = 10000000;
+static NSUInteger NSURLCacheDefaultMemoryCapacity = kCFURLCacheDefaultMemoryCapacity;
+static NSUInteger NSURLCacheDefaultDiskCapacity = kCFURLCacheDefaultDiskCapacity;
 
 // The public header says only <NSCoding, NSCopying>, and NSKeyedArchiver refuses to archive under secure coding an
 // object whose class does not conform to NSSecureCoding.
@@ -308,10 +308,16 @@ static Boolean sharedURLCacheSet = false;
     {
         cache = [sharedURLCache retain];
 
-        // Hack to default initialize NSURLCache
+        // Without a cache set, the shared cache is CFNetwork's default one, so
+        // that this object and CFURLCacheCopySharedURLCache() agree.
         if (!cache && !sharedURLCacheSet) {
-            cache = [[NSURLCache alloc] init];
-            [self setSharedURLCache:cache];
+            CFURLCacheRef cfCache = CFURLCacheCopySharedURLCache();
+            if (cfCache) {
+                cache = [[NSURLCache alloc] _initWithExistingSharedCFURLCache:cfCache];
+                _CFURLCacheSetNSCache(cfCache, cache);
+                CFRelease(cfCache);
+                [self setSharedURLCache:cache];
+            }
         }
     }
     return [cache autorelease];

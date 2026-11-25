@@ -127,6 +127,9 @@ extern const CFStringRef kCFHTTPAuthenticationSchemeDigest           AVAILABLE_M
 
 extern const CFStringRef kCFHTTPAuthenticationSchemeNTLM;
 
+/* The Negotiate (SPNEGO) scheme; declared as in the macOS SDK, since 10.5. */
+extern const CFStringRef kCFHTTPAuthenticationSchemeNegotiate;
+
 /*
  *  CFHTTPMessageRef
  *  

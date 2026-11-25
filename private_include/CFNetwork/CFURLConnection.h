@@ -62,6 +62,20 @@ void CFURLConnectionSendAsynchronousRequest(CFURLRequestRef request, void (^)(CF
 void CFURLConnectionStart(CFURLConnectionRef connection);
 void CFURLConnectionCancel(CFURLConnectionRef connection);
 
+// Keychain functions a process substitutes for the ones CFNetwork would call (version 0).
+struct _CFNFrameworksStubs {
+    CFIndex version;
+    OSStatus (*SecItem_stub_CopyMatching)(CFDictionaryRef query, CFTypeRef *result);
+    OSStatus (*SecItem_stub_Add)(CFDictionaryRef attributes, CFTypeRef *result);
+    OSStatus (*SecItem_stub_Update)(CFDictionaryRef query, CFDictionaryRef attributesToUpdate);
+    OSStatus (*SecItem_stub_Delete)(CFDictionaryRef query);
+};
+void _CFURLConnectionSetFrameworkStubs(const struct _CFNFrameworksStubs *stubs);
+
+// The App Transport Security context, as property list data, that a process passes to its helpers.
+CFDataRef _CFNetworkCopyATSContext(void);
+Boolean _CFNetworkSetATSContext(CFDataRef context);
+
 __END_DECLS
 
 #endif

@@ -10,6 +10,12 @@
 #include "CFFSUtils.h"
 #include "CFRuntimeUtils.h"
 #include <libkern/OSAtomic.h>
+#include <Block.h>
+#include <dispatch/dispatch.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 typedef struct _CFCachedURLResponse {
     CFRuntimeBase _base;
@@ -21,6 +27,11 @@ typedef struct _CFCachedURLResponse {
     CFCachedURLStoragePolicy policy;
     const void* owner;
     CFStringRef dataPath;
+    // a mapping of the file at dataPath, made on demand
+    CFDataRef mappedData;
+    // what to run when the data comes to be kept in a file
+    CFCachedURLResponseCallBackBlock fileBackedBlock;
+    dispatch_queue_t fileBackedQueue;
 } _CFCachedURLResponse;
 
 
@@ -43,7 +54,21 @@ static void cachedResponseDeallocate(CFTypeRef cf) {
     if (cachedResponse->dataPath != NULL) {
         CFRelease(cachedResponse->dataPath);
     }
+    if (cachedResponse->mappedData != NULL) {
+        CFRelease(cachedResponse->mappedData);
+    }
+    if (cachedResponse->fileBackedBlock != NULL) {
+        Block_release(cachedResponse->fileBackedBlock);
+        dispatch_release(cachedResponse->fileBackedQueue);
+    }
 }
+
+static void takeFileBackedCallBack(_CFCachedURLResponse* cachedResponse,
+                                   CFCachedURLResponseCallBackBlock* block,
+                                   dispatch_queue_t* queue);
+static void runFileBackedCallBack(CFCachedURLResponseRef cachedResponse,
+                                  CFCachedURLResponseCallBackBlock block,
+                                  dispatch_queue_t queue);
 
 static CFTypeID cachedResponseTypeID = _kCFRuntimeNotATypeID;
 
@@ -190,6 +215,8 @@ Boolean _CFCachedURLResponseSetDataPath(CFCachedURLResponseRef cachedResponse,
                                         CFStringRef dataPath)
 {
     Boolean result = false;
+    CFCachedURLResponseCallBackBlock block = NULL;
+    dispatch_queue_t queue = NULL;
     OSSpinLockLock(&cachedResponse->lock);
     do {
         if (!owner || cachedResponse->owner != owner) {
@@ -230,9 +257,18 @@ Boolean _CFCachedURLResponseSetDataPath(CFCachedURLResponseRef cachedResponse,
             } else {
                 cachedResponse->dataPath = NULL;
             }
+            // a mapping of the previous file is no longer the response's
+            if (cachedResponse->mappedData) {
+                CFRelease(cachedResponse->mappedData);
+                cachedResponse->mappedData = NULL;
+            }
+            if (dataPath) {
+                takeFileBackedCallBack(cachedResponse, &block, &queue);
+            }
         }
     } while (0);
     OSSpinLockUnlock(&cachedResponse->lock);
+    runFileBackedCallBack(cachedResponse, block, queue);
     return result;
 }
 
@@ -279,7 +315,147 @@ Boolean _CFCachedURLResponseCacheToMemory(CFCachedURLResponseRef cachedResponse,
 }
 
 
+static void unmapData(void* info, void* bytes) {
+    munmap(bytes, (size_t)(uintptr_t)info);
+}
+
+static CFDataRef createMappedData(CFStringRef path) {
+    char filePath[PATH_MAX];
+    if (!CFStringGetFileSystemRepresentation(path, filePath, sizeof(filePath))) {
+        return NULL;
+    }
+    int fd = open(filePath, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        return NULL;
+    }
+    struct stat fileStat;
+    CFDataRef result = NULL;
+    if (fstat(fd, &fileStat) == 0 && fileStat.st_size > 0 && (uintmax_t)fileStat.st_size <= SIZE_MAX) {
+        size_t length = (size_t)fileStat.st_size;
+        void* bytes = mmap(NULL, length, PROT_READ, MAP_PRIVATE, fd, 0);
+        if (bytes != MAP_FAILED) {
+            CFAllocatorContext context = {
+                .info = (void*)(uintptr_t)length,
+                .deallocate = (CFAllocatorDeallocateCallBack)unmapData,
+            };
+            CFAllocatorRef deallocator = CFAllocatorCreate(kCFAllocatorDefault, &context);
+            result = CFDataCreateWithBytesNoCopy(kCFAllocatorDefault, bytes, (CFIndex)length, deallocator);
+            CFRelease(deallocator);
+            if (!result) {
+                munmap(bytes, length);
+            }
+        }
+    }
+    close(fd);
+    return result;
+}
+
+CFDataRef _CFCachedURLResponseGetMemMappedData(CFCachedURLResponseRef cachedResponse) {
+    CFStringRef path = NULL;
+    OSSpinLockLock(&cachedResponse->lock);
+    {
+        if (cachedResponse->mappedData) {
+            CFDataRef data = cachedResponse->mappedData;
+            OSSpinLockUnlock(&cachedResponse->lock);
+            return data;
+        }
+        if (cachedResponse->dataPath) {
+            path = (CFStringRef)CFRetain(cachedResponse->dataPath);
+        }
+    }
+    OSSpinLockUnlock(&cachedResponse->lock);
+    if (!path) {
+        return NULL;
+    }
+
+    // Mapped without the lock held; the mapping is kept only if the same file
+    // still backs the response.
+    CFDataRef mapped = createMappedData(path);
+    CFDataRef result = NULL;
+    OSSpinLockLock(&cachedResponse->lock);
+    {
+        if (cachedResponse->mappedData) {
+            result = cachedResponse->mappedData;
+        } else if (mapped && cachedResponse->dataPath && CFEqual(cachedResponse->dataPath, path)) {
+            cachedResponse->mappedData = (CFDataRef)CFRetain(mapped);
+            result = cachedResponse->mappedData;
+        }
+    }
+    OSSpinLockUnlock(&cachedResponse->lock);
+    if (mapped) {
+        CFRelease(mapped);
+    }
+    CFRelease(path);
+    return result;
+}
+
+void _CFCachedURLResponseSetBecameFileBackedCallBackBlock(CFCachedURLResponseRef cachedResponse,
+                                                          CFCachedURLResponseCallBackBlock block,
+                                                          dispatch_queue_t queue)
+{
+    CFCachedURLResponseCallBackBlock newBlock = (block && queue) ? Block_copy(block) : NULL;
+    if (newBlock) {
+        dispatch_retain(queue);
+    }
+    CFCachedURLResponseCallBackBlock oldBlock = NULL;
+    dispatch_queue_t oldQueue = NULL;
+    CFCachedURLResponseCallBackBlock runBlock = NULL;
+    dispatch_queue_t runQueue = NULL;
+    OSSpinLockLock(&cachedResponse->lock);
+    {
+        oldBlock = cachedResponse->fileBackedBlock;
+        oldQueue = cachedResponse->fileBackedQueue;
+        cachedResponse->fileBackedBlock = newBlock;
+        cachedResponse->fileBackedQueue = newBlock ? queue : NULL;
+        // QUIRK: Not documented. A response whose data is already in a file
+        // runs the block at once, so that a caller does not wait for an event
+        // that has already happened. Evidence: inference only, from the
+        // purpose of the call; not observed on macOS (weakest tier, needs
+        // maintainer approval).
+        // Test: tests/cachedurlresponse-file-backed.c ("quirk: a response
+        // already in a file runs the block at once")
+        if (newBlock && cachedResponse->dataPath) {
+            takeFileBackedCallBack(cachedResponse, &runBlock, &runQueue);
+        }
+    }
+    OSSpinLockUnlock(&cachedResponse->lock);
+    if (oldBlock) {
+        Block_release(oldBlock);
+        dispatch_release(oldQueue);
+    }
+    runFileBackedCallBack(cachedResponse, runBlock, runQueue);
+}
+
+
 /* Private */
+
+// Called with the lock held: hands over the pending block, which runs once.
+static void takeFileBackedCallBack(_CFCachedURLResponse* cachedResponse,
+                                   CFCachedURLResponseCallBackBlock* block,
+                                   dispatch_queue_t* queue)
+{
+    *block = cachedResponse->fileBackedBlock;
+    *queue = cachedResponse->fileBackedQueue;
+    cachedResponse->fileBackedBlock = NULL;
+    cachedResponse->fileBackedQueue = NULL;
+}
+
+// Called without the lock: runs a handed-over block on its queue.
+static void runFileBackedCallBack(CFCachedURLResponseRef cachedResponse,
+                                  CFCachedURLResponseCallBackBlock block,
+                                  dispatch_queue_t queue)
+{
+    if (!block) {
+        return;
+    }
+    CFRetain(cachedResponse);
+    dispatch_async(queue, ^{
+        block(cachedResponse);
+        Block_release(block);
+        CFRelease(cachedResponse);
+    });
+    dispatch_release(queue);
+}
 
 static Boolean loadCachedResponseData(CFCachedURLResponseRef cachedResponse, CFDataRef* data) {
     if (cachedResponse->data) {

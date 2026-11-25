@@ -3,9 +3,17 @@
 #import <CoreFoundation/CoreFoundation.h>
 
 // Response bodies loaded through NSURLConnection (CFURLConnection underneath) from
-// tests/cfurlconnection-test-server.py, and Set-Cookie parsing without a Domain attribute.
+// tests/cfurlconnection-test-server.py, Set-Cookie parsing without a Domain attribute, and
+// the absence of TLS details on a response that did not come over TLS.
 // usage: cfurlconnection-body HTTP_BASE     e.g.  cfurlconnection-body http://127.0.0.1:8770
 // Prints PASS/FAIL lines; the exit status is the number of failures.
+
+// private: the TLS details of the connection a response came over
+typedef const struct _CFURLResponse *CFURLResponseRef;
+extern CFDictionaryRef _CFURLResponseGetSSLCertificateContext(CFURLResponseRef);
+@interface NSURLResponse (Private)
+- (CFURLResponseRef)_CFURLResponse;
+@end
 
 static int failures;
 
@@ -40,6 +48,8 @@ int main(int argc, char **argv)
         NSError *error = nil;
         NSData *data = load(base, @"/plain", &response, &error);
         expect([[[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] isEqualToString:@"plain body"], @"no Content-Encoding: body unchanged");
+        // a response that did not come over TLS has no TLS details
+        expect(_CFURLResponseGetSSLCertificateContext([response _CFURLResponse]) == NULL, @"plain http response has no TLS context");
 
         data = load(base, @"/gzip", &response, &error);
         expect([data isEqualToData:textBytes], @"gzip body, sent in pieces, is inflated across chunks");

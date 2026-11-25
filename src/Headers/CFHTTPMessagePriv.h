@@ -109,6 +109,19 @@ _CFHTTPMessageSetResponseURL(
   CFURLRef           url)                                     AVAILABLE_MAC_OS_X_VERSION_10_3_AND_LATER;
 
 
+/*
+ *  _CFHTTPMessageSetResponseProxyURL()
+ *
+ *  Discussion:
+ *    Records the proxy a response came from, so that a proxy's
+ *    authentication challenge (status 407) is answered for the proxy.
+ */
+extern void
+_CFHTTPMessageSetResponseProxyURL(
+  CFHTTPMessageRef   response,
+  CFURLRef           proxyURL);
+
+
 
 /*
  *  _CFHTTPAuthenticationUpdateFromResponse()

@@ -55,6 +55,7 @@ set(cfnetwork_sources
 	URL/_CFURLAccess.c
 	URL/CFURLAuthChallenge.c
 	URL/CFURLRequest.c
+	URL/CFURLStorageSession.c
 	URL/CFNSURLConnection.m
 	HTTP/CFHTTPServer.c
 	HTTP/CFHTTPMessage.c
@@ -67,8 +68,10 @@ set(cfnetwork_sources
 	#HTTP/NTLM/ntlmBlobPriv.cpp
 	HTTP/CFHTTPAuthentication.c
 	HTTP/CFHTTPConnection.c
+	HTTP/CFNetworkConnectionCacheLimits.c
 	CFNetServices.c # requires Bonjour
 	Host/CFHost.c
+	Host/CFHostPublicSuffix.c
 	Proxies/ProxySupport.c
 	Cookies/CFHTTPCookie.c
 	Cookies/CFHTTPCookieStorage.c
@@ -80,6 +83,7 @@ set(cfnetwork_sources
 	#NetDiagnostics/CFNetDiagnostics.c
 	#NetDiagnostics/CFNetDiagnosticPing.c
 	CFNetwork.c
+	CFNetworkATS.c
 	#libresolv.c
 	#NetServices/DeprecatedDNSServiceDiscovery.c
 	#NetServices/CFNetServices.c
@@ -100,8 +104,10 @@ set(cfnetwork_sources
 	URL/NSURLRequest.m
 	URL/NSURLResponse.m
 	URL/NSURLSession.m
+	URL/NSHSTSStorage.m
 	URL/NSCFURLSession.m
 	URL/NSURLSessionCurl.m
+	URL/NSCFURLSessionWebSocketTask.m
 	URL/NSURLSessionCurlErrors.m
 
 	HTTP/NSHTTPCookie.m
@@ -134,6 +140,9 @@ add_framework(CFNetwork
 		SystemConfiguration
 	CIRCULAR_DEPENDENCIES
 		Security
+	RESOURCES
+		# Mozilla's Public Suffix List (MPL 2.0), for _CFHostIsDomainTopLevel
+		public_suffix_list.dat Resources/public_suffix_list.dat
 
 	# can't do it like this; Foundation segfaults ld when created as a flat namespace, so it can't be circular
 	#UPWARD_DEPENDENCIES

@@ -44,6 +44,7 @@
 #include <sys/param.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <netdb.h>
 #include <sys/ioctl.h>
 #include <sys/fcntl.h>
@@ -84,6 +85,7 @@ CONST_STRING_DECL(kCFStreamPropertyShouldCloseNativeSocket, "kCFStreamPropertySh
 CONST_STRING_DECL(_kCFStreamPropertySocketPeerName, "_kCFStreamPropertySocketPeerName")
 
 CONST_STRING_DECL(kCFStreamPropertySSLPeerCertificates, "kCFStreamPropertySSLPeerCertificates")
+CONST_STRING_DECL(kCFStreamPropertySSLPeerTrust, "kCFStreamPropertySSLPeerTrust")
 CONST_STRING_DECL(_kCFStreamPropertySSLClientCertificates, "_kCFStreamPropertySSLClientCertificates")
 CONST_STRING_DECL(_kCFStreamPropertySSLClientCertificateState, "_kCFStreamPropertySSLClientCertificateState")
 CONST_STRING_DECL(kCFStreamPropertySSLSettings, "kCFStreamPropertySSLSettings")
@@ -103,6 +105,9 @@ CONST_STRING_DECL(kCFStreamSSLLevel, "kCFStreamSSLLevel")
 CONST_STRING_DECL(kCFStreamSSLPeerName, "kCFStreamSSLPeerName")
 CONST_STRING_DECL(kCFStreamSSLValidatesCertificateChain, "kCFStreamSSLValidatesCertificateChain")
 CONST_STRING_DECL(kCFStreamSocketSecurityLevelTLSv1SSLv3, "kCFStreamSocketSecurityLevelTLSv1SSLv3")
+// TLS 1.2 and no other version. The string is Darling's own; the value is
+// used by name only.
+CONST_STRING_DECL(kCFStreamSocketSecurityLevelTLSv1_2, "kCFStreamSocketSecurityLevelTLSv1_2")
 
 /*!
     @constant _kCFStreamPropertySSLAllowAnonymousCiphers
@@ -115,6 +120,7 @@ CONST_STRING_DECL(_kCFStreamPropertySSLAllowAnonymousCiphers, "_kCFStreamPropert
 CONST_STRING_DECL(kCFStreamPropertyUseAddressCache, "kCFStreamPropertyUseAddressCache")
 CONST_STRING_DECL(_kCFStreamSocketIChatWantsSubNet, "_kCFStreamSocketIChatWantsSubNet")
 CONST_STRING_DECL(_kCFStreamSocketCreatedCallBack, "_kCFStreamSocketCreatedCallBack")
+CONST_STRING_DECL(_kCFStreamSocketSetNoDelay, "_kCFStreamSocketSetNoDelay")
 CONST_STRING_DECL(kCFStreamPropertyProxyExceptionsList, "ExceptionsList")
 CONST_STRING_DECL(kCFStreamPropertyProxyLocalBypass, "ExcludeSimpleHostnames");
 
@@ -1262,6 +1268,22 @@ _SocketStreamClose(CFTypeRef stream, _CFSocketStreamContext* ctxt) {
 }
 
 
+/*
+** _kCFStreamSocketSetNoDelay asks for TCP_NODELAY on the socket. The streams
+** keep it as a flag, which is on only for kCFBooleanTrue, and turn the option
+** on whenever there is a socket while the flag is on: when the socket is made
+** or given at open, or at once when the flag is set on open streams.
+*/
+static void
+_SocketStreamApplyNoDelay_NoLock(_CFSocketStreamContext* ctxt) {
+
+	if (ctxt->_socket && (CFDictionaryGetValue(ctxt->_properties, _kCFStreamSocketSetNoDelay) == kCFBooleanTrue)) {
+		int yes = 1;
+		setsockopt(CFSocketGetNative(ctxt->_socket), IPPROTO_TCP, TCP_NODELAY, (void*)&yes, sizeof(yes));
+	}
+}
+
+
 /* static */ CFTypeRef
 _SocketStreamCopyProperty(CFTypeRef stream, CFStringRef propertyName, _CFSocketStreamContext* ctxt) {
 	
@@ -1314,6 +1336,10 @@ _SocketStreamCopyProperty(CFTypeRef stream, CFStringRef propertyName, _CFSocketS
 			/* Create the return value */
 			result = CFDataCreate(CFGetAllocator(stream), (const void*)(&s), sizeof(s));
 		}
+
+		/* The no-delay flag is off until it is set. */
+		else if (CFEqual(_kCFStreamSocketSetNoDelay, propertyName))
+			result = CFRetain(kCFBooleanFalse);
 		
 		/* Support for legacy ordering.  Response was available right away. */
 		else if (CFEqual(kCFStreamPropertyCONNECTResponse, propertyName)) {
@@ -1330,6 +1356,18 @@ _SocketStreamCopyProperty(CFTypeRef stream, CFStringRef propertyName, _CFSocketS
 					CFRelease(result);
 					result = NULL;
 				}
+			}
+		}
+
+		else if (CFEqual(kCFStreamPropertySSLPeerTrust, propertyName)) {
+
+			CFDataRef wrapper = (CFDataRef)CFDictionaryGetValue(ctxt->_properties, kCFStreamPropertySocketSSLContext);
+			if (wrapper) {
+				SecTrustRef trust = NULL;
+				if (SSLCopyPeerTrust(*((SSLContextRef*)CFDataGetBytePtr(wrapper)), &trust) == noErr)
+					result = trust;
+				else if (trust)
+					CFRelease(trust);
 			}
 		}
 
@@ -1459,6 +1497,25 @@ _SocketStreamSetProperty(CFTypeRef stream, CFStringRef propertyName, CFTypeRef p
 		
         result = TRUE;
     }
+
+	else if (CFEqual(propertyName, _kCFStreamSocketSetNoDelay)) {
+
+		if (propertyValue == kCFBooleanTrue)
+			CFDictionarySetValue(ctxt->_properties, propertyName, kCFBooleanTrue);
+		else
+			CFDictionaryRemoveValue(ctxt->_properties, propertyName);
+
+		/*
+		** QUIRK: turning the flag off does not turn TCP_NODELAY off on a
+		** socket it was already turned on for; only the value copied back
+		** changes. Evidence: black-box observation on macOS 26.7.3 and
+		** Mac OS X 10.14.4 (tier 2). Test: "quirk: turning the flag off
+		** leaves the option on" in tests/cfsocketstream-no-delay.c.
+		*/
+		_SocketStreamApplyNoDelay_NoLock(ctxt);
+
+		result = TRUE;
+	}
 
 	else if (CFEqual(propertyName, kCFStreamPropertyShouldCloseNativeSocket)) {
 		
@@ -3114,6 +3171,8 @@ _SocketStreamCreateSocket_NoLock(_CFSocketStreamContext* ctxt, CFDataRef address
             int ttl = 255;
             setsockopt(s, IPPROTO_IP, IP_TTL, (void*)&ttl, sizeof(ttl));
 		}
+
+		_SocketStreamApplyNoDelay_NoLock(ctxt);
 		
 #if !defined(__WIN32)
         /* Turn off SIGPIPE on the socket (SIGPIPE doesn't exist on WIN32) */
@@ -3391,6 +3450,8 @@ _SocketStreamAttemptNextConnection_NoLock(_CFSocketStreamContext* ctxt) {
 			
 			/* Place the socket in nonblocking mode. */
 			ioctl(s, FIONBIO, (void*)&yes);
+
+			_SocketStreamApplyNoDelay_NoLock(ctxt);
 			
 			/* Get the current socket flags and turn off the auto re-enable for reads and writes. */
 			flags = CFSocketGetSocketFlags(ctxt->_socket) &
@@ -6306,6 +6367,10 @@ _SocketStreamSecuritySetInfo_NoLock(_CFSocketStreamContext* ctxt, CFDictionaryRe
                 break;
     
             else if (CFEqual(value, kCFStreamSocketSecurityLevelTLSv1) && SSLSetProtocolVersion(security, kTLSProtocol1Only))
+                break;
+
+            else if (CFEqual(value, kCFStreamSocketSecurityLevelTLSv1_2) &&
+                    (SSLSetProtocolVersionMin(security, kTLSProtocol12) || SSLSetProtocolVersionMax(security, kTLSProtocol12)))
                 break;
     
             else if (CFEqual(value, kCFStreamSocketSecurityLevelTLSv1SSLv3) &&

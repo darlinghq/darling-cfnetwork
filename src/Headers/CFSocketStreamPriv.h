@@ -245,6 +245,9 @@ extern const CFStringRef kCFStreamPropertyProxyExceptionsList;
  *  
  */
 extern const CFStringRef _kCFStreamPropertySocketPeerName;
+
+/* A CFBoolean: kCFBooleanTrue turns TCP_NODELAY on for the socket of the streams. */
+extern const CFStringRef _kCFStreamSocketSetNoDelay;
 /*
  *  CFStreamCreatePairWithNetServicePieces()
  *  

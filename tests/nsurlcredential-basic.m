@@ -39,6 +39,9 @@ int main(void)
 
         NSURLCredential *permanent = [[[NSURLCredential alloc] initWithUser:@"bob" password:@"pw" persistence:NSURLCredentialPersistencePermanent] autorelease];
         expect([permanent persistence] == NSURLCredentialPersistencePermanent, @"permanent persistence is recorded");
+        NSURLCredential *synchronizable = [[[NSURLCredential alloc] initWithUser:@"bob" password:@"pw" persistence:NSURLCredentialPersistenceSynchronizable] autorelease];
+        expect([synchronizable persistence] == NSURLCredentialPersistenceSynchronizable && NSURLCredentialPersistenceSynchronizable == 3,
+               @"synchronizable persistence (macOS 10.8) is recorded and keeps its public value");
         NSURLCredential *single = [NSURLCredential credentialWithUser:@"carol" password:@"pw" persistence:NSURLCredentialPersistenceNone];
         expect([single persistence] == NSURLCredentialPersistenceNone, @"none persistence is recorded");
 

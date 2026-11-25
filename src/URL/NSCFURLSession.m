@@ -24,6 +24,8 @@
 #import <Foundation/NSDateInterval.h>
 #import <Foundation/NSDictionary.h>
 #import <Foundation/NSError.h>
+#import <Foundation/NSHTTPCookie.h>
+#import <Foundation/NSHTTPCookieStorage.h>
 #import <Foundation/NSException.h>
 #import <Foundation/NSLock.h>
 #import <Foundation/NSOperation.h>
@@ -44,6 +46,18 @@ static const NSUInteger kMaximumRedirects = 20;
 
 typedef void (^DataTaskCompletionHandler)(NSData *data, NSURLResponse *response, NSError *error);
 
+// Whether a task takes a priority it is given. A task's priority is a hint
+// for the order of its transfers; the transport does not use it yet.
+static BOOL acceptsTaskPriority(float priority)
+{
+    // QUIRK: a priority below 0 or above 1 is ignored, and the task keeps the
+    // priority it had; NaN, neither, is taken. The documentation only asks for
+    // a value from 0 to 1. Evidence: black-box observation on macOS 26.7.3 and
+    // Mac OS X 10.14.4 (tier 2). Test: "quirk: a priority out of range is
+    // ignored" in tests/nsurlsessiontask-priority.m.
+    return !(priority < 0 || priority > 1);
+}
+
 @protocol _NSURLSessionMetricsDelegate
 - (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task didFinishCollectingMetrics:(NSURLSessionTaskMetrics *)metrics;
 @end
@@ -52,13 +66,14 @@ typedef void (^DataTaskCompletionHandler)(NSData *data, NSURLResponse *response,
 // has a completion handler. Delegates may wait for both before treating a task as finished.
 static void deliverMetrics(__NSCFURLSession *session, NSURLSessionTask *task, NSURLSessionTaskMetrics *metrics)
 {
-    id delegate = [session _delegateRespondingTo:@selector(URLSession:task:didFinishCollectingMetrics:)];
+    id delegate = [session _delegateForTask:task respondingTo:@selector(URLSession:task:didFinishCollectingMetrics:)];
     [(id <_NSURLSessionMetricsDelegate>)delegate URLSession:session task:task didFinishCollectingMetrics:metrics];
 }
 
 @interface __NSCFURLSession ()
 - (NSURLSessionConfiguration *)_configurationNoCopy;
 - (id)_delegateRespondingTo:(SEL)selector;
+- (id)_delegateForTask:(NSURLSessionTask *)task respondingTo:(SEL)selector;
 - (void)_addDelegateBlock:(void (^)(void))block;
 - (void)_taskDidFinish:(NSURLSessionTask *)task;
 @end
@@ -140,6 +155,16 @@ static void deliverMetrics(__NSCFURLSession *session, NSURLSessionTask *task, NS
 {
     id delegate = [self delegate];
     return [delegate respondsToSelector:selector] ? delegate : nil;
+}
+
+// A message about a task goes to the task's own delegate when it implements
+// it, and otherwise to the session's.
+- (id)_delegateForTask:(NSURLSessionTask *)task respondingTo:(SEL)selector
+{
+    id delegate = [task delegate];
+    if ([delegate respondsToSelector:selector])
+        return delegate;
+    return [self _delegateRespondingTo:selector];
 }
 
 - (NSString *)sessionDescription
@@ -399,7 +424,7 @@ static void deliverFlushCompletion(void (^completionHandler)(void))
 
 @end
 
-static NSString *defaultUserAgent(void)
+NSString *_NSURLSessionDefaultUserAgent(void)
 {
     static NSString *agent = nil;
     static dispatch_once_t once;
@@ -432,6 +457,50 @@ static int progressCallback(void *task, curl_off_t downloadTotal, curl_off_t dow
 {
     [(__NSCFURLSessionDataTask *)task _uploadedBytes:uploaded];
     return 0;
+}
+
+NSHTTPCookieStorage *_NSURLSessionCookieStorageForRequest(NSURLSessionConfiguration *configuration, NSURLRequest *request)
+{
+    if (![configuration HTTPShouldSetCookies] || ![request HTTPShouldHandleCookies])
+        return nil;
+    return [configuration HTTPCookieStorage];
+}
+
+BOOL _NSURLSessionHasCookieHeader(NSURLSessionConfiguration *configuration, NSURLRequest *request)
+{
+    NSDictionary *sources[2] = { [request allHTTPHeaderFields], [configuration HTTPAdditionalHeaders] };
+    for (int i = 0; i < 2; i++)
+    {
+        for (NSString *name in sources[i])
+        {
+            if ([name caseInsensitiveCompare:@"Cookie"] == NSOrderedSame)
+                return YES;
+        }
+    }
+    return NO;
+}
+
+// The storage's -getCookiesForTask:completionHandler: may answer later and on any thread.
+void _NSURLSessionGetCookieHeader(NSHTTPCookieStorage *storage, NSURLSessionTask *task, void (^block)(NSString *header))
+{
+    void (^copy)(NSString *) = [block copy];
+    [storage getCookiesForTask:task completionHandler:^(NSArray *cookies) {
+        NSString *header = [[[NSHTTPCookie requestHeaderFieldsWithCookies:cookies ? cookies : @[]] objectForKey:@"Cookie"] copy];
+        _NSURLSessionCurlPerform(^{
+            copy(header);
+            [copy release];
+            [header release];
+        });
+    }];
+}
+
+void _NSURLSessionStoreResponseCookies(NSHTTPCookieStorage *storage, NSURLSessionTask *task, NSHTTPURLResponse *response)
+{
+    if (storage == nil)
+        return;
+    NSArray *cookies = [NSHTTPCookie cookiesWithResponseHeaderFields:[response allHeaderFields] forURL:[[task currentRequest] URL]];
+    if ([cookies count] != 0)
+        [storage storeCookies:cookies forTask:task];
 }
 
 static BOOL isRedirectStatus(NSInteger status)
@@ -483,10 +552,24 @@ static BOOL isSameOrigin(NSURL *a, NSURL *b)
         _completionHandler = [completionHandler copy];
         _state = NSURLSessionTaskStateSuspended;
         _suspendCount = 1;
+        _priority = NSURLSessionTaskPriorityDefault;
         _countOfBytesExpectedToSend = [[request HTTPBody] length];
         _pendingHeaderLines = [[NSMutableArray alloc] init];
+        _settings = [[_NSURLSessionTaskSettings alloc] init];
     }
     return self;
+}
+
+- (_NSURLSessionTaskSettings *)_settings
+{
+    return _settings;
+}
+
+// The session's configuration, or the one adopted for this task alone.
+- (NSURLSessionConfiguration *)_configuration
+{
+    NSURLSessionConfiguration *configuration = [_settings effectiveConfiguration];
+    return configuration != nil ? configuration : [_session _configurationNoCopy];
 }
 
 - (void)dealloc
@@ -505,6 +588,8 @@ static BOOL isSameOrigin(NSURL *a, NSURL *b)
     [_redirectBody release];
     [_redirectRequest release];
     [_redirectResponse release];
+    [_delegate release];
+    [_settings release];
     free(_curlErrorBuffer);
     [super dealloc];
 }
@@ -549,6 +634,32 @@ LOCKED_GETTER(int64_t, countOfBytesExpectedToReceive, _countOfBytesExpectedToRec
         [_taskDescription release];
         _taskDescription = copy;
     }
+}
+
+LOCKED_GETTER(float, priority, _priority)
+
+- (void)setPriority:(float)priority
+{
+    if (!acceptsTaskPriority(priority))
+        return;
+    @synchronized(self)
+    {
+        _priority = priority;
+    }
+}
+
+LOCKED_OBJECT_GETTER(id <NSURLSessionTaskDelegate>, delegate, _delegate)
+
+- (void)setDelegate:(id <NSURLSessionTaskDelegate>)delegate
+{
+    id old;
+    [delegate retain];
+    @synchronized(self)
+    {
+        old = _delegate;
+        _delegate = delegate;
+    }
+    [old release];
 }
 
 - (NSError *)_errorWithCode:(NSInteger)code description:(NSString *)description
@@ -702,16 +813,16 @@ LOCKED_GETTER(int64_t, countOfBytesExpectedToReceive, _countOfBytesExpectedToRec
     // default value defers to the session configuration.
     NSTimeInterval timeout = [request timeoutInterval];
     if (timeout == [NSURLRequest defaultTimeoutInterval])
-        timeout = [[_session _configurationNoCopy] timeoutIntervalForRequest];
+        timeout = [[self _configuration] timeoutIntervalForRequest];
     return timeout;
 }
 
-- (struct curl_slist *)_headerListForRequest:(NSURLRequest *)request
+- (struct curl_slist *)_headerListForRequest:(NSURLRequest *)request cookieHeader:(NSString *)cookieHeader
 {
     const _NSURLSessionCurlAPI *curl = [self _curl];
     NSMutableDictionary *headers = [NSMutableDictionary dictionary];
     NSMutableSet *lowercaseNames = [NSMutableSet set];
-    NSDictionary *sources[2] = { [request allHTTPHeaderFields], [[_session _configurationNoCopy] HTTPAdditionalHeaders] };
+    NSDictionary *sources[2] = { [request allHTTPHeaderFields], [[self _configuration] HTTPAdditionalHeaders] };
     for (int i = 0; i < 2; i++)
     {
         for (NSString *name in sources[i])
@@ -725,6 +836,8 @@ LOCKED_GETTER(int64_t, countOfBytesExpectedToReceive, _countOfBytesExpectedToRec
             [headers setObject:[sources[i] objectForKey:name] forKey:name];
         }
     }
+    if ([cookieHeader length] != 0 && ![lowercaseNames containsObject:@"cookie"])
+        [headers setObject:cookieHeader forKey:@"Cookie"];
 
     struct curl_slist *list = NULL;
     for (NSString *name in headers)
@@ -737,7 +850,7 @@ LOCKED_GETTER(int64_t, countOfBytesExpectedToReceive, _countOfBytesExpectedToRec
     if (![lowercaseNames containsObject:@"expect"])
         list = curl->slist_append(list, "Expect:");
     if (![lowercaseNames containsObject:@"user-agent"])
-        list = curl->slist_append(list, [[@"User-Agent: " stringByAppendingString:defaultUserAgent()] UTF8String]);
+        list = curl->slist_append(list, [[@"User-Agent: " stringByAppendingString:_NSURLSessionDefaultUserAgent()] UTF8String]);
     return list;
 }
 
@@ -764,7 +877,23 @@ LOCKED_GETTER(int64_t, countOfBytesExpectedToReceive, _countOfBytesExpectedToRec
         return;
     }
 
-    NSURLSessionConfiguration *configuration = [_session _configurationNoCopy];
+    NSHTTPCookieStorage *cookieStorage = _NSURLSessionCookieStorageForRequest([self _configuration], request);
+    if (cookieStorage == nil || _NSURLSessionHasCookieHeader([self _configuration], request))
+    {
+        [self _openTransferWithRequest:request cookieHeader:nil];
+        return;
+    }
+    _NSURLSessionGetCookieHeader(cookieStorage, self, ^(NSString *header) {
+        [self _openTransferWithRequest:request cookieHeader:header];
+    });
+}
+
+- (void)_openTransferWithRequest:(NSURLRequest *)request cookieHeader:(NSString *)cookieHeader
+{
+    if (_finished)
+        return;
+    NSURL *url = [request URL];
+    NSURLSessionConfiguration *configuration = [self _configuration];
     CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
     if (_resourceDeadline == 0 && [configuration timeoutIntervalForResource] > 0)
         _resourceDeadline = now + [configuration timeoutIntervalForResource];
@@ -845,8 +974,17 @@ LOCKED_GETTER(int64_t, countOfBytesExpectedToReceive, _countOfBytesExpectedToRec
         _countOfBytesExpectedToSend = [body length];
     }
 
-    _headerList = [self _headerListForRequest:request];
+    _headerList = [self _headerListForRequest:request cookieHeader:cookieHeader];
     curl->easy_setopt(easy, CURLOPT_HTTPHEADER, _headerList);
+
+    // A preconnect task only opens the connection (and does the TLS handshake); it completes
+    // without sending the request, so it has no response. Observed on macOS 26.7.3; test:
+    // nsurlsessiontask-preconnect.
+    if ([_settings preconnect])
+        curl->easy_setopt(easy, CURLOPT_CONNECT_ONLY, 1L);
+    int64_t bytesPerSecond = [_settings bytesPerSecondLimit];
+    if (bytesPerSecond > 0)
+        curl->easy_setopt(easy, CURLOPT_MAX_RECV_SPEED_LARGE, (curl_off_t)bytesPerSecond);
 
     NSTimeInterval idle = [self _idleTimeoutForRequest:request];
     if (idle > 0)
@@ -980,13 +1118,16 @@ LOCKED_GETTER(int64_t, countOfBytesExpectedToReceive, _countOfBytesExpectedToRec
     _pendingStatusCode = 0;
     [_pendingHeaderLines removeAllObjects];
 
+    // the cookies of every response, redirects included
+    _NSURLSessionStoreResponseCookies(_NSURLSessionCookieStorageForRequest([self _configuration], _currentRequest), self, response);
+
     NSURLRequest *redirect = [self _redirectRequestForResponse:response];
     if (redirect != nil)
     {
         _redirectRequest = [redirect retain];
         _redirectResponse = [response retain];
         // Kept in case the delegate declines the redirect.
-        if ([_session _delegateRespondingTo:@selector(URLSession:task:willPerformHTTPRedirection:newRequest:completionHandler:)] != nil)
+        if ([_session _delegateForTask:self respondingTo:@selector(URLSession:task:willPerformHTTPRedirection:newRequest:completionHandler:)] != nil)
             _redirectBody = [[NSMutableData alloc] init];
         return;
     }
@@ -1003,7 +1144,7 @@ LOCKED_GETTER(int64_t, countOfBytesExpectedToReceive, _countOfBytesExpectedToRec
     }
     if (_completionHandler != nil)
         return;
-    id delegate = [_session _delegateRespondingTo:@selector(URLSession:dataTask:didReceiveResponse:completionHandler:)];
+    id delegate = [_session _delegateForTask:self respondingTo:@selector(URLSession:dataTask:didReceiveResponse:completionHandler:)];
     if (delegate == nil)
         return;
 
@@ -1083,7 +1224,7 @@ LOCKED_GETTER(int64_t, countOfBytesExpectedToReceive, _countOfBytesExpectedToRec
         [_receivedData appendData:data];
         return;
     }
-    id delegate = [_session _delegateRespondingTo:@selector(URLSession:dataTask:didReceiveData:)];
+    id delegate = [_session _delegateForTask:self respondingTo:@selector(URLSession:dataTask:didReceiveData:)];
     if (delegate != nil)
     {
         [_session _addDelegateBlock:^{
@@ -1120,7 +1261,7 @@ LOCKED_GETTER(int64_t, countOfBytesExpectedToReceive, _countOfBytesExpectedToRec
         sent = _countOfBytesSent;
         expected = _countOfBytesExpectedToSend;
     }
-    id delegate = [_session _delegateRespondingTo:@selector(URLSession:task:didSendBodyData:totalBytesSent:totalBytesExpectedToSend:)];
+    id delegate = [_session _delegateForTask:self respondingTo:@selector(URLSession:task:didSendBodyData:totalBytesSent:totalBytesExpectedToSend:)];
     if (delegate == nil)
         return;
     [_session _addDelegateBlock:^{
@@ -1186,7 +1327,7 @@ LOCKED_GETTER(int64_t, countOfBytesExpectedToReceive, _countOfBytesExpectedToRec
         return;
     }
 
-    id delegate = [_session _delegateRespondingTo:@selector(URLSession:task:willPerformHTTPRedirection:newRequest:completionHandler:)];
+    id delegate = [_session _delegateForTask:self respondingTo:@selector(URLSession:task:willPerformHTTPRedirection:newRequest:completionHandler:)];
     if (delegate == nil)
     {
         [self _redirectDecided:request response:response];
@@ -1260,12 +1401,18 @@ LOCKED_GETTER(int64_t, countOfBytesExpectedToReceive, _countOfBytesExpectedToRec
         }
         else
         {
-            id delegate = [session _delegateRespondingTo:@selector(URLSession:task:didCompleteWithError:)];
+            id delegate = [session _delegateForTask:self respondingTo:@selector(URLSession:task:didCompleteWithError:)];
             [delegate URLSession:session task:self didCompleteWithError:error];
         }
+        [self setDelegate:nil];
         [session _taskDidFinish:self];
         [self autorelease];
     }];
+}
+
+- (NSURLSessionTaskMetrics *)_incompleteTaskMetrics
+{
+    return [self _metrics];
 }
 
 - (NSURLSessionTaskMetrics *)_metrics
@@ -1301,6 +1448,8 @@ LOCKED_GETTER(int64_t, countOfBytesExpectedToReceive, _countOfBytesExpectedToRec
         _taskIdentifier = identifier;
         _completionHandler = [completionHandler copy];
         _state = NSURLSessionTaskStateSuspended;
+        _priority = NSURLSessionTaskPriorityDefault;
+        _settings = [[_NSURLSessionTaskSettings alloc] init];
 
         [self retain];
         _innerTask = [[session dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
@@ -1317,7 +1466,7 @@ LOCKED_GETTER(int64_t, countOfBytesExpectedToReceive, _countOfBytesExpectedToRec
                 CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
                 if (received != expected && now - reportedAt < 0.1)
                     return;
-                id delegate = [session _delegateRespondingTo:@selector(URLSession:downloadTask:didWriteData:totalBytesWritten:totalBytesExpectedToWrite:)];
+                id delegate = [session _delegateForTask:self respondingTo:@selector(URLSession:downloadTask:didWriteData:totalBytesWritten:totalBytesExpectedToWrite:)];
                 if (delegate == nil)
                     return;
                 int64_t written = received - reported;
@@ -1362,16 +1511,17 @@ LOCKED_GETTER(int64_t, countOfBytesExpectedToReceive, _countOfBytesExpectedToRec
         handler(tempURL, response, error);
     } else {
         if (tempURL != nil) {
-            id downloadDelegate = [session _delegateRespondingTo:@selector(URLSession:downloadTask:didFinishDownloadingToURL:)];
+            id downloadDelegate = [session _delegateForTask:self respondingTo:@selector(URLSession:downloadTask:didFinishDownloadingToURL:)];
             if (downloadDelegate) {
                 [downloadDelegate URLSession:session downloadTask:self didFinishDownloadingToURL:tempURL];
             }
         }
-        id taskDelegate = [session _delegateRespondingTo:@selector(URLSession:task:didCompleteWithError:)];
+        id taskDelegate = [session _delegateForTask:self respondingTo:@selector(URLSession:task:didCompleteWithError:)];
         if (taskDelegate) {
             [taskDelegate URLSession:session task:self didCompleteWithError:error];
         }
     }
+    [self setDelegate:nil];
     [session _taskDidFinish:self];
 }
 
@@ -1419,6 +1569,31 @@ LOCKED_GETTER(int64_t, countOfBytesExpectedToReceive, _countOfBytesExpectedToRec
     _taskDescription = [desc copy];
 }
 
+- (float)priority {
+    return _priority;
+}
+
+- (void)setPriority:(float)priority {
+    if (acceptsTaskPriority(priority))
+        _priority = priority;
+}
+
+- (id <NSURLSessionTaskDelegate>)delegate {
+    @synchronized(self) {
+        return [[_delegate retain] autorelease];
+    }
+}
+
+- (void)setDelegate:(id <NSURLSessionTaskDelegate>)delegate {
+    id old;
+    [delegate retain];
+    @synchronized(self) {
+        old = _delegate;
+        _delegate = delegate;
+    }
+    [old release];
+}
+
 - (int64_t)countOfBytesReceived {
     return _innerTask ? [_innerTask countOfBytesReceived] : _countOfBytesReceived;
 }
@@ -1435,7 +1610,19 @@ LOCKED_GETTER(int64_t, countOfBytesExpectedToReceive, _countOfBytesExpectedToRec
     [_innerTask release];
     [_completionHandler release];
     [_taskDescription release];
+    [_delegate release];
+    [_settings release];
     [super dealloc];
+}
+
+- (_NSURLSessionTaskSettings *)_settings
+{
+    return _settings;
+}
+
+- (NSURLSessionTaskMetrics *)_incompleteTaskMetrics
+{
+    return [(__NSCFURLSessionDataTask *)_innerTask _metrics];
 }
 
 @end

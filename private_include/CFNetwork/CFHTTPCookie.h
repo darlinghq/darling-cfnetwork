@@ -14,6 +14,9 @@
 
 __BEGIN_DECLS
 
+// The domain of the cookies of file URLs.
+extern const CFStringRef kCFHTTPCookieLocalFileDomain;
+
 typedef struct __CFHTTPCookie *CFHTTPCookieRef;
 
 CFHTTPCookieRef CFHTTPCookieCreateWithProperties(CFDictionaryRef properties);

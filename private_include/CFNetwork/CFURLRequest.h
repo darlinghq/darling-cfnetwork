@@ -81,8 +81,25 @@ Boolean CFURLRequestRemoveHTTPField(CFMutableURLRequestRef request, CFIndex inde
 Boolean CFURLRequestReplaceHTTPField(CFMutableURLRequestRef request, CFIndex index, CFStringRef value);
 Boolean CFURLRequestSetHTTPBody(CFMutableURLRequestRef request, CFDataRef data);
 Boolean CFURLRequestSetHTTPBodyStream(CFMutableURLRequestRef request, CFReadStreamRef stream);
+void CFURLRequestSetHTTPRequestBody(CFMutableURLRequestRef request, CFDataRef body);
+void CFURLRequestSetHTTPRequestBodyStream(CFMutableURLRequestRef request, CFReadStreamRef bodyStream);
 Boolean CFURLRequestHandleCookies(CFMutableURLRequestRef request, Boolean enabled);
 Boolean CFURLRequestUseHTTPPipelining(CFMutableURLRequestRef request, Boolean enabled);
+
+CF_EXPORT const CFStringRef _kCFURLCachePartitionKey;
+CF_EXPORT const CFStringRef kCFURLRequestAllowAllPOSTCaching;
+CF_EXPORT const CFStringRef kCFURLRequestContentDecoderSkipURLCheck;
+
+typedef CFIndex CFURLRequestPriority;
+CFURLRequestPriority CFURLRequestGetRequestPriority(CFURLRequestRef request);
+void CFURLRequestSetRequestPriority(CFURLRequestRef request, CFURLRequestPriority priority);
+void CFURLRequestSetShouldPipelineHTTP(CFURLRequestRef request, Boolean shouldPipeline, Boolean shouldPipelineNonIdempotent);
+void CFURLRequestSetShouldStartSynchronously(CFURLRequestRef request, Boolean shouldStartSynchronously);
+// NSURLProtocol's per-request properties (+propertyForKey:inRequest: and the like).
+CFTypeRef _CFURLRequestCopyProtocolPropertyForKey(CFURLRequestRef request, CFStringRef key);
+void _CFURLRequestSetProtocolProperty(CFURLRequestRef request, CFStringRef key, CFTypeRef value);
+typedef const struct __CFURLStorageSession* CFURLStorageSessionRef;
+void _CFURLRequestSetStorageSession(CFMutableURLRequestRef request, CFURLStorageSessionRef session);
 
 CFHTTPMessageRef CFHTTPMessageCreateRequestFromURLRequest(CFAllocatorRef allocator, CFURLRequestRef request);
 

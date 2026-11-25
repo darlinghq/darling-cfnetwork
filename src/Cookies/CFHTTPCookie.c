@@ -19,6 +19,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+// QUIRK: the cookies of file URLs all belong to this domain, which stands for the host such a URL
+// does not have. Not documented. Evidence: black-box observation on macOS 26.7.3 (tier 2), where
+// the exported constant has this value and cookies set for file:///tmp/x.html get it as their
+// domain. Test: tests/cookie-storage-files.m, "quirk: file URLs".
+const CFStringRef kCFHTTPCookieLocalFileDomain = CFSTR(".^filecookies^");
+
 static const CFStringRef kCFHTTPCookieName = CFSTR("Name");
 static const CFStringRef kCFHTTPCookieValue = CFSTR("Value");
 static const CFStringRef kCFHTTPCookieOriginURL = CFSTR("OriginURL");
@@ -34,6 +40,7 @@ static const CFStringRef kCFHTTPCookieMaximumAge = CFSTR("Max-Age");
 static const CFStringRef kCFHTTPCookiePort = CFSTR("Port");
 static const CFStringRef kCFHTTPCookieHTTPOnly = CFSTR("HTTPOnly");
 static const CFStringRef kCFHTTPCookieHttpOnly = CFSTR("HttpOnly");
+static const CFStringRef kCFHTTPCookieSameSite = CFSTR("SameSite");
 
 // A cookie is immutable once created, so it can be shared between threads without locking.
 struct __CFHTTPCookie {
@@ -158,6 +165,12 @@ CFStringRef _CFHTTPCookieCopyHostOfURL(CFURLRef url) {
     if (url == NULL) {
         return NULL;
     }
+    CFStringRef scheme = CFURLCopyScheme(url);
+    Boolean isFile = scheme != NULL && CFStringCompare(scheme, CFSTR("file"), kCFCompareCaseInsensitive) == kCFCompareEqualTo;
+    if (scheme != NULL) CFRelease(scheme);
+    if (isFile) {
+        return CFRetain(kCFHTTPCookieLocalFileDomain);
+    }
     CFStringRef host = CFURLCopyHostName(url);
     if (host == NULL) {
         return NULL;
@@ -174,6 +187,10 @@ CFStringRef _CFHTTPCookieCopyHostOfURL(CFURLRef url) {
 Boolean _CFHTTPCookieDomainMatchesHost(CFStringRef cookieDomain, CFStringRef host) {
     if (cookieDomain == NULL || host == NULL || CFStringGetLength(cookieDomain) == 0) {
         return false;
+    }
+    if (CFStringCompare(cookieDomain, host, kCFCompareCaseInsensitive) == kCFCompareEqualTo) {
+        // the host itself, which may begin with a dot: the local file domain
+        return true;
     }
     if (CFStringGetCharacterAtIndex(cookieDomain, 0) != '.') {
         // host-only cookie
@@ -328,6 +345,10 @@ CFHTTPCookieRef _CFHTTPCookieCreateStoredCopy(CFHTTPCookieRef cookie, CFAbsolute
     copy->_sessionOnly = cookie->_sessionOnly;
     copy->_storedTime = storedTime;
     return copy;
+}
+
+Boolean _CFHTTPCookieHasSameProperties(CFHTTPCookieRef a, CFHTTPCookieRef b) {
+    return CFEqual(a->_properties, b->_properties);
 }
 
 CFAbsoluteTime _CFHTTPCookieGetExpirationTime(CFHTTPCookieRef cookie) {
@@ -583,6 +604,20 @@ static void __capExpiry(CFMutableDictionaryRef properties) {
 }
 
 // Builds one cookie from a single "name=value; attribute; ..." string, or returns NULL.
+static Boolean __isInsecureWebScheme(CFURLRef url) {
+    if (url == NULL) {
+        return false;
+    }
+    CFStringRef scheme = CFURLCopyScheme(url);
+    if (scheme == NULL) {
+        return false;
+    }
+    Boolean insecure = CFStringCompare(scheme, CFSTR("http"), kCFCompareCaseInsensitive) == kCFCompareEqualTo ||
+                       CFStringCompare(scheme, CFSTR("ws"), kCFCompareCaseInsensitive) == kCFCompareEqualTo;
+    CFRelease(scheme);
+    return insecure;
+}
+
 static CFHTTPCookieRef __createCookieFromSetCookie(const char *start, const char *end, CFURLRef url) {
     const char *attrEnd = memchr(start, ';', end - start);
     const char *pairEnd = attrEnd != NULL ? attrEnd : end;
@@ -659,6 +694,17 @@ static CFHTTPCookieRef __createCookieFromSetCookie(const char *start, const char
                 CFDictionarySetValue(properties, kCFHTTPCookieSecure, CFSTR("TRUE"));
             } else if (CFStringCompare(attrName, CFSTR("httponly"), kCFCompareCaseInsensitive) == kCFCompareEqualTo) {
                 CFDictionarySetValue(properties, kCFHTTPCookieHttpOnly, CFSTR("TRUE"));
+            } else if (CFStringCompare(attrName, CFSTR("samesite"), kCFCompareCaseInsensitive) == kCFCompareEqualTo) {
+                // The SameSite attribute (RFC 6265bis, section 5.6.7): Lax and Strict are kept,
+                // in lower case; None and unknown values leave the cookie without a policy. A
+                // later attribute replaces an earlier one.
+                if (CFStringCompare(attrValue, CFSTR("lax"), kCFCompareCaseInsensitive) == kCFCompareEqualTo) {
+                    CFDictionarySetValue(properties, kCFHTTPCookieSameSite, CFSTR("lax"));
+                } else if (CFStringCompare(attrValue, CFSTR("strict"), kCFCompareCaseInsensitive) == kCFCompareEqualTo) {
+                    CFDictionarySetValue(properties, kCFHTTPCookieSameSite, CFSTR("strict"));
+                } else {
+                    CFDictionaryRemoveValue(properties, kCFHTTPCookieSameSite);
+                }
             }
         }
         if (attrName != NULL) CFRelease(attrName);
@@ -671,6 +717,14 @@ static CFHTTPCookieRef __createCookieFromSetCookie(const char *start, const char
     }
     CFDictionarySetValue(properties, kCFHTTPCookiePath, path);
     CFRelease(path);
+
+    // A Secure cookie set over an insecure web protocol is ignored (RFC 6265bis, section 5.7).
+    // macOS 26.7.3 ignores it for http and ws, localhost included, and keeps it for every other
+    // scheme. Test: cookie-secure-from-insecure-scheme.m.
+    if (CFDictionaryContainsKey(properties, kCFHTTPCookieSecure) && __isInsecureWebScheme(url)) {
+        CFRelease(properties);
+        return NULL;
+    }
 
     __capExpiry(properties);
     CFHTTPCookieRef cookie = CFHTTPCookieCreateWithProperties(properties);

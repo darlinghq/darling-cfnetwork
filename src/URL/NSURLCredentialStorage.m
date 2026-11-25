@@ -230,4 +230,12 @@ static BOOL isStorable(NSURLCredential *credential)
     }
 }
 
+// SPI: a storage of its own, separate from the shared one and from every other.
+// Darling keeps no credentials on disk, so the identifier names nothing and a
+// storage that isn't private is the same as a private one.
+- (id)_initWithIdentifier:(NSString *)identifier private:(bool)isPrivate
+{
+    return [self init];
+}
+
 @end

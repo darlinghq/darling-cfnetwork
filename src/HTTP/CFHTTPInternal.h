@@ -44,6 +44,9 @@ extern "C" {
 extern CFHTTPAuthenticationRef _CFHTTPMessageGetAuthentication(CFHTTPMessageRef message, Boolean proxy);
 extern void _CFHTTPMessageSetAuthentication(CFHTTPMessageRef message, CFHTTPAuthenticationRef auth, Boolean proxy);
 extern void _CFHTTPMessageSetResponseURL(CFHTTPMessageRef response, CFURLRef url);
+extern void _CFHTTPMessageSetResponseProxyURL(CFHTTPMessageRef response, CFURLRef proxyURL);
+// The proxy the response came from, or NULL.
+extern CFURLRef _CFHTTPMessageCopyResponseProxyURL(CFHTTPMessageRef response);
 
 extern void _CFHTTPMessageSetHeader(CFHTTPMessageRef msg, CFStringRef theHeader, CFStringRef value, CFIndex position);
 

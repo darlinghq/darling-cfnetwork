@@ -19,6 +19,17 @@ CF_EXPORT
 Boolean CFURLCacheGetShared(CFURLCacheRef* cache); // CFRelease() cache
 
 CF_EXPORT
+// The capacities of the cache a process has before it sets one.
+#define kCFURLCacheDefaultMemoryCapacity 512000
+#define kCFURLCacheDefaultDiskCapacity 10000000
+
+// The shared cache (CFURLCacheGetShared), made with the default capacities if
+// the process has not set one.
+CF_EXPORT CFURLCacheRef CFURLCacheCopySharedURLCache(void);
+
+// The directory the cache keeps its responses in; NULL if it keeps them in memory only.
+CF_EXPORT CFStringRef _CFURLCacheCopyCacheDirectory(CFURLCacheRef cache);
+
 CFURLCacheRef CFURLCacheCreate(CFAllocatorRef allocator,
                                size_t memoryCapacity, size_t diskCapacity,
                                CFStringRef path);

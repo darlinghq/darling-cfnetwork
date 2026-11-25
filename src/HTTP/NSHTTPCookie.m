@@ -29,6 +29,12 @@ NSString * const NSHTTPCookieCommentURL = @"CommentURL";
 NSString * const NSHTTPCookieDiscard = @"Discard";
 NSString * const NSHTTPCookieMaximumAge = @"Max-Age";
 NSString * const NSHTTPCookiePort = @"Port";
+// Apple's reference does not give these strings: the key is the cookie
+// attribute's name and the values its lower-case values (RFC 6265bis), as on
+// macOS 26.7.3 (test: tests/nshttpcookie-same-site.m).
+NSHTTPCookiePropertyKey const NSHTTPCookieSameSitePolicy = @"SameSite";
+NSHTTPCookieStringPolicy const NSHTTPCookieSameSiteLax = @"lax";
+NSHTTPCookieStringPolicy const NSHTTPCookieSameSiteStrict = @"strict";
 
 
 @implementation NSHTTPCookie
@@ -105,6 +111,24 @@ NSString * const NSHTTPCookiePort = @"Port";
     return _cookiePrivate;
 }
 
+// The CFHTTPCookie the object wraps, under the names WebKit uses.
+- (CFHTTPCookieRef)_CFHTTPCookie
+{
+    return [self privateCookie];
+}
+
+- (CFHTTPCookieRef)_GetInternalCFHTTPCookie
+{
+    return [self privateCookie];
+}
+
+// The partition the cookie is kept in (the CHIPS "Partitioned" attribute);
+// Darling keeps every cookie outside any partition.
+- (NSString *)_storagePartition
+{
+    return nil;
+}
+
 - (NSDictionary *)properties
 {
     return [(NSDictionary *)CFHTTPCookieCopyProperties(_cookiePrivate) autorelease];
@@ -155,6 +179,18 @@ NSString * const NSHTTPCookiePort = @"Port";
     return CFHTTPCookieIsHTTPOnly(_cookiePrivate);
 }
 
+- (NSHTTPCookieStringPolicy)sameSitePolicy
+{
+    id policy = [[self properties] objectForKey:NSHTTPCookieSameSitePolicy];
+    if (![policy isKindOfClass:[NSString class]])
+        return nil;
+    if ([policy caseInsensitiveCompare:NSHTTPCookieSameSiteLax] == NSOrderedSame)
+        return NSHTTPCookieSameSiteLax;
+    if ([policy caseInsensitiveCompare:NSHTTPCookieSameSiteStrict] == NSOrderedSame)
+        return NSHTTPCookieSameSiteStrict;
+    return nil;
+}
+
 - (NSString *)comment
 {
     return (NSString *)CFHTTPCookieGetComment(_cookiePrivate);
@@ -184,5 +220,59 @@ NSString * const NSHTTPCookiePort = @"Port";
     return [[self name] hash] ^ [[self domain] hash] ^ [[self path] hash];
 }
 
+
+@end
+
+@implementation NSHTTPCookie (NSHTTPCookiePrivate)
+
+// The cookie one Set-Cookie header value sets for a URL, parsed as
+// +cookiesWithResponseHeaderFields:forURL: parses it; nil when it sets none. Darling
+// keeps every cookie outside any partition (see -_storagePartition), so the partition
+// isn't used.
++ (NSHTTPCookie *)_cookieForSetCookieString:(NSString *)setCookieString forURL:(NSURL *)URL partition:(NSString *)partition
+{
+    if (setCookieString == nil)
+    {
+        return nil;
+    }
+    NSArray *cookies = [self cookiesWithResponseHeaderFields:[NSDictionary dictionaryWithObject:setCookieString forKey:@"Set-Cookie"] forURL:URL];
+    return [cookies count] != 0 ? [cookies objectAtIndex:0] : nil;
+}
+
+// Cookies as NSHTTPCookie objects, from an array of CFHTTPCookie or NSHTTPCookie objects.
++ (NSArray *)_cf2nsCookies:(CFArrayRef)cfCookies
+{
+    NSMutableArray *result = [NSMutableArray array];
+    for (id cookie in (NSArray *)cfCookies)
+    {
+        if ([cookie isKindOfClass:[NSHTTPCookie class]])
+        {
+            [result addObject:cookie];
+        }
+        else if (CFGetTypeID((CFTypeRef)cookie) == CFHTTPCookieGetTypeID())
+        {
+            NSHTTPCookie *wrapped = [[NSHTTPCookie alloc] initWithCookie:(CFHTTPCookieRef)cookie];
+            [result addObject:wrapped];
+            [wrapped release];
+        }
+    }
+    return result;
+}
+
+// The cookies as a new array of CFHTTPCookie objects, for the CFHTTPCookie and
+// CFHTTPCookieStorage functions; NULL for nil.
++ (CFArrayRef)_ns2cfCookies:(NSArray *)nsCookies
+{
+    if (nsCookies == nil)
+    {
+        return NULL;
+    }
+    CFMutableArrayRef result = CFArrayCreateMutable(kCFAllocatorDefault, [nsCookies count], &kCFTypeArrayCallBacks);
+    for (NSHTTPCookie *cookie in nsCookies)
+    {
+        CFArrayAppendValue(result, [cookie _CFHTTPCookie]);
+    }
+    return result;
+}
 
 @end

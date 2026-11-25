@@ -17,13 +17,16 @@
  along with Darling.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-// Helpers shared by CFHTTPCookie.c and CFHTTPCookieStorage.c. Not exported.
+// Helpers shared by CFHTTPCookie.c, CFHTTPCookieStorage.c and the storage
+// sessions. Not exported.
 
 #ifndef CFNetwork_CFHTTPCookieInternal_h
 #define CFNetwork_CFHTTPCookieInternal_h
 
 #include <CoreFoundation/CoreFoundation.h>
 #include "CFHTTPCookie.h"
+#include "CFHTTPCookieStorage.h"
+#include <dispatch/dispatch.h>
 
 __BEGIN_DECLS
 
@@ -48,6 +51,22 @@ _CFHTTPCookieHidden Boolean _CFHTTPCookieHostIsIPAddress(CFStringRef host);
 _CFHTTPCookieHidden Boolean _CFHTTPCookieDomainMatchesHost(CFStringRef cookieDomain, CFStringRef host);
 // Does the cookie's path cover the request path (RFC 6265 section 5.1.4)?
 _CFHTTPCookieHidden Boolean _CFHTTPCookiePathMatchesPath(CFStringRef cookiePath, CFStringRef requestPath);
+
+// Same attributes (name, value, domain, path, expiry, flags and the rest of the properties).
+_CFHTTPCookieHidden Boolean _CFHTTPCookieHasSameProperties(CFHTTPCookieRef a, CFHTTPCookieRef b);
+
+// Handlers of the cookie changes of a storage, behind the NSHTTPCookieStorage SPI
+// (-_setCookiesChangedHandler:onQueue:, -_setCookiesRemovedHandler:onQueue: and
+// -_setSubscribedDomainsForCookieChanges:). A storage has one handler of each kind, whichever
+// storage object set it, and calls them only for the hosts subscribed to; see CFHTTPCookieStorage.c.
+typedef void (^_CFHTTPCookieStorageCookiesAddedHandler)(CFArrayRef cookies, CFStringRef host);
+typedef void (^_CFHTTPCookieStorageCookiesRemovedHandler)(CFArrayRef cookies, CFStringRef host, Boolean removeAll);
+_CFHTTPCookieHidden void _CFHTTPCookieStorageSetCookiesAddedHandler(CFHTTPCookieStorageRef storage, _CFHTTPCookieStorageCookiesAddedHandler handler, dispatch_queue_t queue);
+_CFHTTPCookieHidden void _CFHTTPCookieStorageSetCookiesRemovedHandler(CFHTTPCookieStorageRef storage, _CFHTTPCookieStorageCookiesRemovedHandler handler, dispatch_queue_t queue);
+_CFHTTPCookieHidden void _CFHTTPCookieStorageSetSubscribedHosts(CFHTTPCookieStorageRef storage, CFSetRef hosts);
+
+// A new storage that is kept in memory only (a storage session's).
+_CFHTTPCookieHidden CFHTTPCookieStorageRef __CFHTTPCookieStorageCreateInMemory(CFAllocatorRef allocator);
 
 __END_DECLS
 

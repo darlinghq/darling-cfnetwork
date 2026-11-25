@@ -13,9 +13,12 @@
 #include "CFArray.h"
 #include <CoreFoundation/CFBundle.h>
 #include <CoreFoundation/CFPropertyList.h>
+#include <CoreFoundation/CFRunLoop.h>
 #include <dispatch/dispatch.h>
+#include <Block.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <pthread.h>
 #include <pwd.h>
 #include <stdlib.h>
@@ -25,8 +28,10 @@
 
 // The storage holds immutable cookies in an array protected by a mutex. The default storage is
 // persistent: its non-session cookies live in a property list under ~/Library/Cookies, named after
-// the main bundle identifier (or the process name when there is none). The file is read the first
-// time the storage is used and rewritten atomically whenever a persistent cookie changes.
+// the main bundle identifier (or the process name when there is none). A storage made with
+// CFHTTPCookieStorageCreateFromFile, or from the identifying data of another, keeps them in that
+// file instead. The file is read the first time the storage is used and rewritten atomically
+// whenever a persistent cookie changes.
 
 struct __CFHTTPCookieStorage {
     CFRuntimeBase _base;
@@ -39,6 +44,19 @@ struct __CFHTTPCookieStorage {
     char *_persistPath;
     CFHTTPCookieStorageChangeCallBack _changeCallBack;
     void *_changeInfo;
+    // where the change callback is called, when the storage is scheduled
+    CFRunLoopRef _runLoop;
+    CFStringRef _runLoopMode;
+    // the change handlers (SPI) and the hosts they are called for; see "Change handlers" below
+    _CFHTTPCookieStorageCookiesAddedHandler _addedHandler;
+    dispatch_queue_t _addedQueue;
+    _CFHTTPCookieStorageCookiesRemovedHandler _removedHandler;
+    dispatch_queue_t _removedQueue;
+    CFSetRef _subscribedHosts;
+    // what the mutation in progress adds and removes, for the change handlers (NULL if there are none)
+    CFMutableArrayRef _changeAdded;
+    CFMutableArrayRef _changeRemoved;
+    Boolean _changeRemovedAll;
 };
 
 #define kPersistenceFormatVersion 1
@@ -47,6 +65,13 @@ static void __CFHTTPCookieStorageDeallocate(CFTypeRef cf) {
     struct __CFHTTPCookieStorage *item = (struct __CFHTTPCookieStorage *)cf;
     CFRelease(item->_cookies);
     free(item->_persistPath);
+    if (item->_runLoop != NULL) CFRelease(item->_runLoop);
+    if (item->_runLoopMode != NULL) CFRelease(item->_runLoopMode);
+    if (item->_addedHandler != NULL) Block_release(item->_addedHandler);
+    if (item->_addedQueue != NULL) dispatch_release(item->_addedQueue);
+    if (item->_removedHandler != NULL) Block_release(item->_removedHandler);
+    if (item->_removedQueue != NULL) dispatch_release(item->_removedQueue);
+    if (item->_subscribedHosts != NULL) CFRelease(item->_subscribedHosts);
     pthread_mutex_destroy(&item->_lock);
 }
 
@@ -86,6 +111,11 @@ static struct __CFHTTPCookieStorage *_CFHTTPCookieStorageCreate(CFAllocatorRef a
     cookieStorage->_persistent = persistent;
     cookieStorage->_loaded = !persistent;
     return cookieStorage;
+}
+
+// A storage of its own that is kept in memory only, for a storage session.
+CFHTTPCookieStorageRef __CFHTTPCookieStorageCreateInMemory(CFAllocatorRef allocator) {
+    return (CFHTTPCookieStorageRef)_CFHTTPCookieStorageCreate(allocator, false);
 }
 
 CFHTTPCookieStorageRef CFHTTPCookieStorageGetDefault() {
@@ -248,7 +278,9 @@ static void __ensureLoaded(CFHTTPCookieStorageRef storage) {
         return;
     }
     storage->_loaded = true;
-    storage->_persistPath = __createPersistencePath();
+    if (storage->_persistPath == NULL) {
+        storage->_persistPath = __createPersistencePath();
+    }
     if (storage->_persistPath == NULL) {
         return;
     }
@@ -413,6 +445,19 @@ static void __pruneExpired(CFHTTPCookieStorageRef storage, CFAbsoluteTime now) {
     }
 }
 
+// Records a cookie the mutation in progress added (or removed) for the change handlers.
+static void __recordAdded(CFHTTPCookieStorageRef storage, CFHTTPCookieRef cookie) {
+    if (storage->_changeAdded != NULL) {
+        CFArrayAppendValue(storage->_changeAdded, cookie);
+    }
+}
+
+static void __recordRemoved(CFHTTPCookieStorageRef storage, CFHTTPCookieRef cookie) {
+    if (storage->_changeRemoved != NULL) {
+        CFArrayAppendValue(storage->_changeRemoved, cookie);
+    }
+}
+
 // Stores the cookie, replacing the one with the same name, domain and path. A cookie that has
 // already expired removes that one instead.
 static void __setCookie(CFHTTPCookieStorageRef storage, CFHTTPCookieRef cookie, CFAbsoluteTime now) {
@@ -420,25 +465,227 @@ static void __setCookie(CFHTTPCookieStorageRef storage, CFHTTPCookieRef cookie, 
     if (_CFHTTPCookieIsExpired(cookie, now)) {
         if (existing != kCFNotFound) {
             __removeAtIndex(storage, existing);
+            // QUIRK: the change handlers are told that the expired cookie was added, not that the
+            // stored one was removed. Not documented. Evidence: black-box observation on macOS
+            // 26.7.3 (tier 2). Test: tests/nshttpcookiestorage-change-handlers.m, "expired cookie
+            // replacing a stored one".
+            __recordAdded(storage, cookie);
         }
         return;
     }
     CFHTTPCookieRef stored = _CFHTTPCookieCreateStoredCopy(cookie, now);
     if (existing == kCFNotFound) {
         CFArrayAppendValue(storage->_cookies, stored);
+        __recordAdded(storage, stored);
     } else {
-        __markDirtyIfPersistent(storage, (CFHTTPCookieRef)CFArrayGetValueAtIndex(storage->_cookies, existing));
+        CFHTTPCookieRef previous = (CFHTTPCookieRef)CFArrayGetValueAtIndex(storage->_cookies, existing);
+        // storing the same cookie again is no change to report
+        if (!_CFHTTPCookieHasSameProperties(previous, stored)) {
+            __recordAdded(storage, stored);
+        }
+        __markDirtyIfPersistent(storage, previous);
         CFArraySetValueAtIndex(storage->_cookies, existing, stored);
     }
     __markDirtyIfPersistent(storage, stored);
     CFRelease(stored);
 }
 
-// Called after the lock is released.
-static void __notifyChanged(CFHTTPCookieStorageRef storage, CFHTTPCookieStorageChangeCallBack callBack, void *info) {
-    if (callBack != NULL) {
-        callBack(storage, info);
+#pragma mark - Change handlers
+
+// SPI. The handlers of a storage are called (asynchronously, on their queue or else on a global
+// one) for the hosts subscribed to, as observed on macOS 26.7.3 (test:
+// tests/nshttpcookiestorage-change-handlers.m):
+// - with nobody subscribed, no handler is called;
+// - for each subscribed host, the added handler gets the cookies one call to the storage stored
+//   or changed that a request to that host would carry (a host-only cookie of the host, or a
+//   domain cookie of it or of a domain above it), with the host; storing a cookie again unchanged
+//   is no change;
+// - the removed handler gets the deleted cookies the same way;
+// - deleting all cookies calls the removed handler once, with no cookies and no host.
+// Cookies a storage drops because they have expired are not reported.
+
+typedef struct {
+    _CFHTTPCookieStorageCookiesAddedHandler addedHandler;
+    dispatch_queue_t addedQueue;
+    _CFHTTPCookieStorageCookiesRemovedHandler removedHandler;
+    dispatch_queue_t removedQueue;
+    CFSetRef hosts;
+    CFArrayRef added;
+    CFArrayRef removed;
+    Boolean removedAll;
+} __CFHTTPCookieStorageChanges;
+
+// Lock held. Starts recording the changes of a mutation if a handler will want them.
+static void __beginChanges(CFHTTPCookieStorageRef storage) {
+    storage->_changeAdded = NULL;
+    storage->_changeRemoved = NULL;
+    storage->_changeRemovedAll = false;
+    if (storage->_subscribedHosts == NULL || CFSetGetCount(storage->_subscribedHosts) == 0) {
+        return;
     }
+    if (storage->_addedHandler != NULL) {
+        storage->_changeAdded = CFArrayCreateMutable(kCFAllocatorDefault, 0, &kCFTypeArrayCallBacks);
+    }
+    if (storage->_removedHandler != NULL) {
+        storage->_changeRemoved = CFArrayCreateMutable(kCFAllocatorDefault, 0, &kCFTypeArrayCallBacks);
+    }
+}
+
+// Lock held. Takes the recorded changes, with what is needed to report them once the lock is released.
+static void __takeChanges(CFHTTPCookieStorageRef storage, __CFHTTPCookieStorageChanges *changes) {
+    memset(changes, 0, sizeof(*changes));
+    changes->added = storage->_changeAdded;
+    changes->removed = storage->_changeRemoved;
+    changes->removedAll = storage->_changeRemovedAll && storage->_changeRemoved != NULL;
+    storage->_changeAdded = NULL;
+    storage->_changeRemoved = NULL;
+    storage->_changeRemovedAll = false;
+    if (changes->added == NULL && changes->removed == NULL) {
+        return;
+    }
+    changes->hosts = CFSetCreateCopy(kCFAllocatorDefault, storage->_subscribedHosts);
+    if (changes->added != NULL) {
+        changes->addedHandler = Block_copy(storage->_addedHandler);
+        changes->addedQueue = storage->_addedQueue;
+        if (changes->addedQueue != NULL) dispatch_retain(changes->addedQueue);
+    }
+    if (changes->removed != NULL) {
+        changes->removedHandler = Block_copy(storage->_removedHandler);
+        changes->removedQueue = storage->_removedQueue;
+        if (changes->removedQueue != NULL) dispatch_retain(changes->removedQueue);
+    }
+}
+
+// QUIRK: a subscribed host is compared with the cookies' (lowercase) domains as it is, so a host
+// that is not in lowercase is told about no cookie. Not documented. Evidence: black-box observation
+// on macOS 26.7.3 (tier 2). Test: tests/nshttpcookiestorage-change-handlers.m, "uppercase host".
+static Boolean __subscribedHostMatches(CFHTTPCookieRef cookie, CFStringRef host) {
+    CFMutableStringRef lowercase = CFStringCreateMutableCopy(kCFAllocatorDefault, 0, host);
+    CFStringLowercase(lowercase, NULL);
+    Boolean isLowercase = CFStringCompare(lowercase, host, 0) == kCFCompareEqualTo;
+    CFRelease(lowercase);
+    return isLowercase && _CFHTTPCookieDomainMatchesHost(CFHTTPCookieGetDomain(cookie), host);
+}
+
+static dispatch_queue_t __handlerQueue(dispatch_queue_t queue) {
+    return queue != NULL ? queue : dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
+}
+
+// Lock not held. Calls the handlers for the changes and releases them.
+static void __reportChanges(__CFHTTPCookieStorageChanges *changes) {
+    if (changes->hosts != NULL) {
+        CFIndex hostCount = CFSetGetCount(changes->hosts);
+        CFStringRef *hosts = malloc(sizeof(CFStringRef) * (hostCount > 0 ? hostCount : 1));
+        CFSetGetValues(changes->hosts, (const void **)hosts);
+        for (CFIndex h = 0; h < hostCount; h++) {
+            CFStringRef host = hosts[h];
+            if (CFGetTypeID(host) != CFStringGetTypeID()) {
+                continue;
+            }
+            for (int kind = 0; kind < 2; kind++) {
+                CFArrayRef cookies = kind == 0 ? changes->added : changes->removed;
+                if (cookies == NULL) {
+                    continue;
+                }
+                CFMutableArrayRef matching = CFArrayCreateMutable(kCFAllocatorDefault, 0, &kCFTypeArrayCallBacks);
+                for (CFIndex i = 0; i < CFArrayGetCount(cookies); i++) {
+                    CFHTTPCookieRef cookie = (CFHTTPCookieRef)CFArrayGetValueAtIndex(cookies, i);
+                    if (__subscribedHostMatches(cookie, host)) {
+                        CFArrayAppendValue(matching, cookie);
+                    }
+                }
+                if (CFArrayGetCount(matching) == 0) {
+                    CFRelease(matching);
+                    continue;
+                }
+                CFRetain(host);
+                if (kind == 0) {
+                    _CFHTTPCookieStorageCookiesAddedHandler handler = changes->addedHandler;
+                    dispatch_async(__handlerQueue(changes->addedQueue), ^{
+                        handler(matching, host);
+                        CFRelease(matching);
+                        CFRelease(host);
+                    });
+                } else {
+                    _CFHTTPCookieStorageCookiesRemovedHandler handler = changes->removedHandler;
+                    dispatch_async(__handlerQueue(changes->removedQueue), ^{
+                        handler(matching, host, false);
+                        CFRelease(matching);
+                        CFRelease(host);
+                    });
+                }
+            }
+        }
+        free(hosts);
+        CFRelease(changes->hosts);
+    }
+    if (changes->removedAll) {
+        _CFHTTPCookieStorageCookiesRemovedHandler handler = changes->removedHandler;
+        dispatch_async(__handlerQueue(changes->removedQueue), ^{
+            handler(NULL, NULL, true);
+        });
+    }
+    if (changes->added != NULL) CFRelease(changes->added);
+    if (changes->removed != NULL) CFRelease(changes->removed);
+    if (changes->addedHandler != NULL) Block_release(changes->addedHandler);
+    if (changes->addedQueue != NULL) dispatch_release(changes->addedQueue);
+    if (changes->removedHandler != NULL) Block_release(changes->removedHandler);
+    if (changes->removedQueue != NULL) dispatch_release(changes->removedQueue);
+}
+
+void _CFHTTPCookieStorageSetCookiesAddedHandler(CFHTTPCookieStorageRef storage, _CFHTTPCookieStorageCookiesAddedHandler handler, dispatch_queue_t queue) {
+    handler = handler != NULL ? Block_copy(handler) : NULL;
+    if (queue != NULL) dispatch_retain(queue);
+    __lock(storage);
+    _CFHTTPCookieStorageCookiesAddedHandler oldHandler = storage->_addedHandler;
+    dispatch_queue_t oldQueue = storage->_addedQueue;
+    storage->_addedHandler = handler;
+    storage->_addedQueue = queue;
+    __unlock(storage);
+    if (oldHandler != NULL) Block_release(oldHandler);
+    if (oldQueue != NULL) dispatch_release(oldQueue);
+}
+
+void _CFHTTPCookieStorageSetCookiesRemovedHandler(CFHTTPCookieStorageRef storage, _CFHTTPCookieStorageCookiesRemovedHandler handler, dispatch_queue_t queue) {
+    handler = handler != NULL ? Block_copy(handler) : NULL;
+    if (queue != NULL) dispatch_retain(queue);
+    __lock(storage);
+    _CFHTTPCookieStorageCookiesRemovedHandler oldHandler = storage->_removedHandler;
+    dispatch_queue_t oldQueue = storage->_removedQueue;
+    storage->_removedHandler = handler;
+    storage->_removedQueue = queue;
+    __unlock(storage);
+    if (oldHandler != NULL) Block_release(oldHandler);
+    if (oldQueue != NULL) dispatch_release(oldQueue);
+}
+
+void _CFHTTPCookieStorageSetSubscribedHosts(CFHTTPCookieStorageRef storage, CFSetRef hosts) {
+    CFSetRef copy = hosts != NULL ? CFSetCreateCopy(kCFAllocatorDefault, hosts) : NULL;
+    __lock(storage);
+    CFSetRef old = storage->_subscribedHosts;
+    storage->_subscribedHosts = copy;
+    __unlock(storage);
+    if (old != NULL) CFRelease(old);
+}
+
+// Called after the lock is released, with the run loop and mode the storage was scheduled with
+// (retained) or NULL: the callback is then called on that run loop, or else right away.
+static void __notifyChanged(CFHTTPCookieStorageRef storage, CFHTTPCookieStorageChangeCallBack callBack, void *info,
+                            CFRunLoopRef runLoop, CFStringRef mode) {
+    if (callBack != NULL) {
+        if (runLoop != NULL) {
+            CFRetain(storage);
+            CFRunLoopPerformBlock(runLoop, mode, ^{
+                callBack(storage, info);
+                CFRelease(storage);
+            });
+            CFRunLoopWakeUp(runLoop);
+        } else {
+            callBack(storage, info);
+        }
+    }
+    if (runLoop != NULL) CFRelease(runLoop);
+    if (mode != NULL) CFRelease(mode);
 }
 
 #define BEGIN_MUTATION(storage) \
@@ -446,14 +693,20 @@ static void __notifyChanged(CFHTTPCookieStorageRef storage, CFHTTPCookieStorageC
     __ensureLoaded(storage); \
     CFAbsoluteTime now = CFAbsoluteTimeGetCurrent(); \
     Boolean changed = true; \
-    __pruneExpired(storage, now);
+    __pruneExpired(storage, now); \
+    __beginChanges(storage);
 
 #define END_MUTATION(storage) \
     __flushLocked(storage); \
     CFHTTPCookieStorageChangeCallBack callBack = changed ? storage->_changeCallBack : NULL; \
     void *callBackInfo = storage->_changeInfo; \
+    CFRunLoopRef callBackRunLoop = callBack != NULL && storage->_runLoop != NULL ? (CFRunLoopRef)CFRetain(storage->_runLoop) : NULL; \
+    CFStringRef callBackMode = callBackRunLoop != NULL ? (CFStringRef)CFRetain(storage->_runLoopMode) : NULL; \
+    __CFHTTPCookieStorageChanges handlerChanges; \
+    __takeChanges(storage, &handlerChanges); \
     __unlock(storage); \
-    __notifyChanged(storage, callBack, callBackInfo);
+    __notifyChanged(storage, callBack, callBackInfo, callBackRunLoop, callBackMode); \
+    __reportChanges(&handlerChanges);
 
 #pragma mark - Public API
 
@@ -481,6 +734,121 @@ void CFHTTPCookieStorageSetAcceptPolicy(CFHTTPCookieStorageRef storage, CFHTTPCo
     __unlock(storage);
 }
 
+// Calls the change callback on the run loop, in the mode, from now on, rather than right away on the
+// thread that changed the cookies.
+void CFHTTPCookieStorageScheduleWithRunLoop(CFHTTPCookieStorageRef storage, CFRunLoopRef runLoop, CFStringRef mode) {
+    if (runLoop == NULL || mode == NULL) {
+        return;
+    }
+    CFRetain(runLoop);
+    CFStringRef modeCopy = CFStringCreateCopy(kCFAllocatorDefault, mode);
+    __lock(storage);
+    CFRunLoopRef oldRunLoop = storage->_runLoop;
+    CFStringRef oldMode = storage->_runLoopMode;
+    storage->_runLoop = runLoop;
+    storage->_runLoopMode = modeCopy;
+    __unlock(storage);
+    if (oldRunLoop != NULL) CFRelease(oldRunLoop);
+    if (oldMode != NULL) CFRelease(oldMode);
+}
+
+#pragma mark - Storages in files
+
+// The file that a storage made from the URL keeps its cookies in: the URL's path, for a URL of any
+// scheme (as on macOS 26.7.3, where http://example.com/c gives a storage on /c). NULL when the URL
+// has no usable path.
+static char *__createPathFromURL(CFURLRef url) {
+    char path[PATH_MAX];
+    if (CFURLGetFileSystemRepresentation(url, true, (UInt8 *)path, sizeof path) && path[0] == '/') {
+        return strdup(path);
+    }
+    CFStringRef urlPath = CFURLCopyFileSystemPath(url, kCFURLPOSIXPathStyle);
+    if (urlPath == NULL) {
+        return NULL;
+    }
+    Boolean ok = CFStringGetFileSystemRepresentation(urlPath, path, sizeof path) && path[0] == '/';
+    CFRelease(urlPath);
+    return ok ? strdup(path) : NULL;
+}
+
+// A persistent storage whose cookies are kept in the file. Without a URL, or with one that has no
+// path, the file is the process's default cookie file, as for the default storage (macOS 26.7.3
+// gives a storage on ~/Library/HTTPStorages/<process>.binarycookies for a NULL URL). The third
+// argument, a storage to share with, is not used.
+CFHTTPCookieStorageRef CFHTTPCookieStorageCreateFromFile(CFAllocatorRef allocator, CFURLRef url, CFHTTPCookieStorageRef sharedStorage) {
+    struct __CFHTTPCookieStorage *storage = _CFHTTPCookieStorageCreate(allocator, true);
+    if (url != NULL) {
+        storage->_persistPath = __createPathFromURL(url);
+    }
+    return (CFHTTPCookieStorageRef)storage;
+}
+
+// The identifying data names the storage's file, so that another storage, in this process or
+// another, can be opened on the same cookies. Its format is Darling's own: a binary property list
+// holding the path. NULL for a storage kept in memory only, which has no file, and when no home
+// directory can be found for the default file.
+static const CFStringRef kIdentifyingDataPathKey = CFSTR("Path");
+
+CFDataRef CFHTTPCookieStorageCreateIdentifyingData(CFAllocatorRef allocator, CFHTTPCookieStorageRef storage) {
+    if (storage == NULL) {
+        return NULL;
+    }
+    __lock(storage);
+    if (storage->_persistent && storage->_persistPath == NULL) {
+        storage->_persistPath = __createPersistencePath();
+    }
+    CFStringRef path = storage->_persistent && storage->_persistPath != NULL
+        ? CFStringCreateWithFileSystemRepresentation(kCFAllocatorDefault, storage->_persistPath) : NULL;
+    __unlock(storage);
+    if (path == NULL) {
+        return NULL;
+    }
+    CFDictionaryRef plist = CFDictionaryCreate(kCFAllocatorDefault, (const void **)&kIdentifyingDataPathKey, (const void **)&path, 1,
+        &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    CFRelease(path);
+    CFDataRef data = CFPropertyListCreateData(allocator, plist, kCFPropertyListBinaryFormat_v1_0, 0, NULL);
+    CFRelease(plist);
+    return data;
+}
+
+// A new storage on the file that the data names; NULL when the data does not name one.
+CFHTTPCookieStorageRef CFHTTPCookieStorageCreateFromIdentifyingData(CFAllocatorRef allocator, CFDataRef data) {
+    if (data == NULL) {
+        return NULL;
+    }
+    CFPropertyListRef plist = CFPropertyListCreateWithData(kCFAllocatorDefault, data, kCFPropertyListImmutable, NULL, NULL);
+    if (plist == NULL) {
+        return NULL;
+    }
+    CFHTTPCookieStorageRef storage = NULL;
+    if (CFGetTypeID(plist) == CFDictionaryGetTypeID()) {
+        CFTypeRef path = CFDictionaryGetValue(plist, kIdentifyingDataPathKey);
+        char buffer[PATH_MAX];
+        if (path != NULL && CFGetTypeID(path) == CFStringGetTypeID()
+            && CFStringGetFileSystemRepresentation(path, buffer, sizeof buffer) && buffer[0] == '/') {
+            struct __CFHTTPCookieStorage *created = _CFHTTPCookieStorageCreate(allocator, true);
+            created->_persistPath = strdup(buffer);
+            storage = (CFHTTPCookieStorageRef)created;
+        }
+    }
+    CFRelease(plist);
+    return storage;
+}
+
+// The same storage as CFHTTPCookieStorageGetDefault(); the allocator is not used.
+CFHTTPCookieStorageRef _CFHTTPCookieStorageGetDefault(CFAllocatorRef allocator) {
+    return CFHTTPCookieStorageGetDefault();
+}
+
+// The names WebKit and Foundation use for the accept policy accessors.
+CFHTTPCookieStorageAcceptPolicy CFHTTPCookieStorageGetCookieAcceptPolicy(CFHTTPCookieStorageRef storage) {
+    return CFHTTPCookieStorageGetAcceptPolicy(storage);
+}
+
+void CFHTTPCookieStorageSetCookieAcceptPolicy(CFHTTPCookieStorageRef storage, CFHTTPCookieStorageAcceptPolicy policy) {
+    CFHTTPCookieStorageSetAcceptPolicy(storage, policy);
+}
+
 void CFHTTPCookieStorageDeleteCookie(CFHTTPCookieStorageRef storage, CFHTTPCookieRef cookie) {
     if (cookie == NULL) {
         return;
@@ -490,6 +858,10 @@ void CFHTTPCookieStorageDeleteCookie(CFHTTPCookieStorageRef storage, CFHTTPCooki
     if (index != kCFNotFound) {
         __removeAtIndex(storage, index);
     }
+    // QUIRK: the removed handler is told about the cookie even if the storage did not have it. Not
+    // documented. Evidence: black-box observation on macOS 26.7.3 (tier 2). Test:
+    // tests/nshttpcookiestorage-change-handlers.m, "deleting a cookie that is not stored".
+    __recordRemoved(storage, cookie);
     END_MUTATION(storage)
 }
 
@@ -513,6 +885,17 @@ void CFHTTPCookieStorageSetCookies(CFHTTPCookieStorageRef storage, CFArrayRef co
     END_MUTATION(storage)
 }
 
+void CFHTTPCookieStorageDeleteAllCookies(CFHTTPCookieStorageRef storage) {
+    BEGIN_MUTATION(storage)
+    changed = CFArrayGetCount(storage->_cookies) > 0;
+    for (CFIndex i = CFArrayGetCount(storage->_cookies) - 1; i >= 0; i--) {
+        __removeAtIndex(storage, i);
+    }
+    // the removed handler is called even if there was nothing to delete (macOS 26.7.3)
+    storage->_changeRemovedAll = true;
+    END_MUTATION(storage)
+}
+
 void CFHTTPCookieStorageDeleteCookiesSinceDate(CFHTTPCookieStorageRef storage, CFDateRef date) {
     if (date == NULL) {
         return;
@@ -520,7 +903,9 @@ void CFHTTPCookieStorageDeleteCookiesSinceDate(CFHTTPCookieStorageRef storage, C
     CFAbsoluteTime since = CFDateGetAbsoluteTime(date);
     BEGIN_MUTATION(storage)
     for (CFIndex i = CFArrayGetCount(storage->_cookies) - 1; i >= 0; i--) {
-        if (_CFHTTPCookieGetStoredTime((CFHTTPCookieRef)CFArrayGetValueAtIndex(storage->_cookies, i)) >= since) {
+        CFHTTPCookieRef cookie = (CFHTTPCookieRef)CFArrayGetValueAtIndex(storage->_cookies, i);
+        if (_CFHTTPCookieGetStoredTime(cookie) >= since) {
+            __recordRemoved(storage, cookie);
             __removeAtIndex(storage, i);
         }
     }
@@ -600,6 +985,10 @@ static Boolean __hostsShareSite(CFStringRef a, CFStringRef b) {
 // when it is a domain cookie, must not be a single label such as a top-level domain.
 static Boolean __cookieDomainAcceptableForHost(CFHTTPCookieRef cookie, CFStringRef host) {
     CFStringRef domain = CFHTTPCookieGetDomain(cookie);
+    // A domain that is the host itself, such as the local file domain for a file URL.
+    if (domain != NULL && CFStringCompare(domain, host, kCFCompareCaseInsensitive) == kCFCompareEqualTo) {
+        return true;
+    }
     if (_CFHTTPCookieIsHostOnly(cookie)) {
         return _CFHTTPCookieDomainMatchesHost(domain, host);
     }

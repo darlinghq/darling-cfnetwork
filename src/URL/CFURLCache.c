@@ -6,6 +6,7 @@
 //
 
 #include "CFURLCache.h"
+#include <stdlib.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include <libkern/OSAtomic.h>
 #include "CFRuntime.h"
@@ -169,6 +170,57 @@ Boolean CFURLCacheGetShared(CFURLCacheRef* cache) {
     }
     OSSpinLockUnlock(&sharedCacheLock);
     return *cache != NULL;
+}
+
+// The cache the process uses when it has not set one: kept in memory, and on
+// disk in $CACHEDIR/NSURLCache when CACHEDIR is set (as NSURLCache's default
+// cache always was).
+static CFURLCacheRef createDefaultCache(void) {
+    CFStringRef path = NULL;
+    const char* cacheDir = getenv("CACHEDIR");
+    if (cacheDir) {
+        path = CFStringCreateWithFormat(kCFAllocatorDefault, NULL, CFSTR("%s/NSURLCache"), cacheDir);
+    }
+    CFURLCacheRef cache = CFURLCacheCreate(kCFAllocatorDefault, kCFURLCacheDefaultMemoryCapacity,
+                                           kCFURLCacheDefaultDiskCapacity, path);
+    if (path) {
+        CFRelease(path);
+    }
+    return cache;
+}
+
+// The directory the cache keeps its responses in, or NULL for a cache kept in
+// memory only.
+CFStringRef _CFURLCacheCopyCacheDirectory(CFURLCacheRef cache) {
+    if (!cache || !cache->path) {
+        return NULL;
+    }
+    return CFStringCreateCopy(kCFAllocatorDefault, cache->path);
+}
+
+CFURLCacheRef CFURLCacheCopySharedURLCache(void) {
+    CFURLCacheRef cache = NULL;
+    if (CFURLCacheGetShared(&cache)) {
+        if (cache) {
+            return cache;
+        }
+    }
+
+    // Made without the lock held; a cache set meanwhile wins.
+    CFURLCacheRef created = createDefaultCache();
+    if (!created) {
+        return NULL;
+    }
+    OSSpinLockLock(&sharedCacheLock);
+    {
+        if (!sharedCache) {
+            sharedCache = (CFURLCacheRef)CFRetain(created);
+        }
+        cache = (CFURLCacheRef)CFRetain(sharedCache);
+    }
+    OSSpinLockUnlock(&sharedCacheLock);
+    CFRelease(created);
+    return cache;
 }
 
 CFURLCacheRef CFURLCacheCreate(CFAllocatorRef allocator, size_t memoryCapacity, size_t diskCapacity, CFStringRef path) {
