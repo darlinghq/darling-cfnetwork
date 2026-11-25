@@ -11,10 +11,12 @@
 #import <Foundation/NSArray.h>
 #import <Foundation/NSString.h>
 #import <Foundation/NSAutoreleasePool.h>
+#import <Foundation/NSValue.h>
 #include <dispatch/dispatch.h>
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <stdlib.h>
 #include <unistd.h>
 
 static const char kCurlLibraryPath[] = "/usr/lib/libcurl.4.dylib";
@@ -35,7 +37,26 @@ static struct {
     CURLMsg *(*multi_info_read)(CURLM *multi, int *queued);
 } multiAPI;
 
+// A socket the transport thread waits on besides libcurl's own.
+@interface _NSURLSessionCurlWatch : NSObject {
+@public
+    curl_socket_t _socket;
+    short _events;
+    void (^_handler)(short events);
+}
+@end
+
+@implementation _NSURLSessionCurlWatch
+- (void)dealloc
+{
+    [_handler release];
+    [super dealloc];
+}
+@end
+
 static CURLM *multi = NULL;
+// Only touched on the transport thread.
+static NSMutableArray *watches = nil;
 static int wakeFds[2] = { -1, -1 };
 static pthread_mutex_t pendingLock = PTHREAD_MUTEX_INITIALIZER;
 static NSMutableArray *pendingBlocks = nil;
@@ -58,6 +79,8 @@ static NSString *loadCurl(void)
     LOAD(curlAPI, easy_strerror, "curl_easy_strerror");
     LOAD(curlAPI, slist_append, "curl_slist_append");
     LOAD(curlAPI, slist_free_all, "curl_slist_free_all");
+    LOAD(curlAPI, easy_send, "curl_easy_send");
+    LOAD(curlAPI, easy_recv, "curl_easy_recv");
     LOAD(multiAPI, global_init, "curl_global_init");
     LOAD(multiAPI, multi_init, "curl_multi_init");
     LOAD(multiAPI, multi_add_handle, "curl_multi_add_handle");
@@ -111,7 +134,8 @@ static void deliverCompletions(void)
         CURLcode code = message->data.result;
         id <_NSURLSessionCurlTransfer> transfer = nil;
         curlAPI.easy_getinfo(easy, CURLINFO_PRIVATE, (char **)&transfer);
-        multiAPI.multi_remove_handle(multi, easy);
+        if (![transfer respondsToSelector:@selector(_curlTransferKeepsHandle)] || ![transfer _curlTransferKeepsHandle])
+            multiAPI.multi_remove_handle(multi, easy);
         [transfer _curlTransferDidCompleteWithCode:code];
     }
 }
@@ -129,10 +153,40 @@ static void *transportThread(void *unused)
 
         if (!hasPendingBlocks())
         {
-            struct curl_waitfd wake = { .fd = wakeFds[0], .events = CURL_WAIT_POLLIN, .revents = 0 };
-            multiAPI.multi_wait(multi, &wake, 1, kIdleWaitMilliseconds, NULL);
-            if (wake.revents != 0)
+            // The wake pipe first, then the watched sockets.
+            NSUInteger count = [watches count];
+            struct curl_waitfd *waits = calloc(count + 1, sizeof(struct curl_waitfd));
+            waits[0].fd = wakeFds[0];
+            waits[0].events = CURL_WAIT_POLLIN;
+            for (NSUInteger i = 0; i < count; i++)
+            {
+                _NSURLSessionCurlWatch *watch = [watches objectAtIndex:i];
+                waits[i + 1].fd = watch->_socket;
+                waits[i + 1].events = watch->_events;
+            }
+            multiAPI.multi_wait(multi, waits, (unsigned int)count + 1, kIdleWaitMilliseconds, NULL);
+            if (waits[0].revents != 0)
                 drainWakePipe();
+            // A handler may watch or unwatch sockets, so the matches are
+            // collected first.
+            NSMutableArray *ready = [NSMutableArray array];
+            NSMutableArray *readyEvents = [NSMutableArray array];
+            for (NSUInteger i = 0; i < count; i++)
+            {
+                if (waits[i + 1].revents == 0)
+                    continue;
+                [ready addObject:[watches objectAtIndex:i]];
+                [readyEvents addObject:[NSNumber numberWithShort:waits[i + 1].revents]];
+            }
+            free(waits);
+            for (NSUInteger i = 0; i < [ready count]; i++)
+            {
+                _NSURLSessionCurlWatch *watch = [ready objectAtIndex:i];
+                if ([watches indexOfObjectIdenticalTo:watch] == NSNotFound)
+                    continue;
+                void (^handler)(short) = [[watch->_handler retain] autorelease];
+                handler([[readyEvents objectAtIndex:i] shortValue]);
+            }
         }
         [pool drain];
     }
@@ -147,6 +201,7 @@ static void startTransport(void)
 
     multi = multiAPI.multi_init();
     pendingBlocks = [[NSMutableArray alloc] init];
+    watches = [[NSMutableArray alloc] init];
     if (multi == NULL || pipe(wakeFds) != 0)
     {
         curlLoadError = @"cannot create the libcurl multi handle";
@@ -200,4 +255,35 @@ CURLMcode _NSURLSessionCurlAddHandle(CURL *easy)
 void _NSURLSessionCurlRemoveHandle(CURL *easy)
 {
     multiAPI.multi_remove_handle(multi, easy);
+}
+
+static NSUInteger indexOfWatch(curl_socket_t socket)
+{
+    for (NSUInteger i = 0; i < [watches count]; i++)
+    {
+        if (((_NSURLSessionCurlWatch *)[watches objectAtIndex:i])->_socket == socket)
+            return i;
+    }
+    return NSNotFound;
+}
+
+void _NSURLSessionCurlWatchSocket(curl_socket_t socket, short events, void (^handler)(short events))
+{
+    _NSURLSessionCurlWatch *watch = [[_NSURLSessionCurlWatch alloc] init];
+    watch->_socket = socket;
+    watch->_events = events;
+    watch->_handler = [handler copy];
+    NSUInteger index = indexOfWatch(socket);
+    if (index != NSNotFound)
+        [watches replaceObjectAtIndex:index withObject:watch];
+    else
+        [watches addObject:watch];
+    [watch release];
+}
+
+void _NSURLSessionCurlUnwatchSocket(curl_socket_t socket)
+{
+    NSUInteger index = indexOfWatch(socket);
+    if (index != NSNotFound)
+        [watches removeObjectAtIndex:index];
 }

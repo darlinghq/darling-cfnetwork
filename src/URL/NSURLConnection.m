@@ -29,6 +29,8 @@
 #import <CFNetwork/CFURLConnection.h>
 #import <CoreFoundation/CFData.h>
 #import <Foundation/NSURLError.h>
+#include <dispatch/dispatch.h>
+#include <pthread.h>
 
 @implementation NSURLConnectionInternal
 
@@ -524,7 +526,56 @@ static CFCachedURLResponseRef cache(const void *info, CFCachedURLResponseRef cac
 
 @end
 
+// The run loop of the thread that the URL loading system schedules its work on. The thread is
+// started the first time the run loop is asked for, and runs it for the life of the process.
+static CFRunLoopRef loaderRunLoop;
+static dispatch_semaphore_t loaderStarted;
+
+static void loaderKeepAlive(void *info)
+{
+}
+
+static void *loaderThreadMain(void *unused)
+{
+    pthread_setname_np("com.apple.NSURLConnectionLoader");
+    loaderRunLoop = (CFRunLoopRef)CFRetain(CFRunLoopGetCurrent());
+
+    // A run loop without sources returns at once; this one never fires.
+    CFRunLoopSourceContext context = { .perform = loaderKeepAlive };
+    CFRunLoopSourceRef source = CFRunLoopSourceCreate(kCFAllocatorDefault, 0, &context);
+    CFRunLoopAddSource(loaderRunLoop, source, kCFRunLoopCommonModes);
+    CFRelease(source);
+
+    dispatch_semaphore_signal(loaderStarted);
+    while (true) {
+        @autoreleasepool {
+            CFRunLoopRunInMode(kCFRunLoopDefaultMode, 1.0e10, false);
+        }
+    }
+    return NULL;
+}
+
 @implementation NSURLConnection
+
+// SPI. The run loop of the URL loader thread, a CFRunLoopRef: the same one for every caller, on a
+// thread of its own named com.apple.NSURLConnectionLoader, running in the default mode (so in the
+// common modes too). Observed on macOS 26.7.3.
++ (CFRunLoopRef)resourceLoaderRunLoop
+{
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        loaderStarted = dispatch_semaphore_create(0);
+        pthread_attr_t attributes;
+        pthread_attr_init(&attributes);
+        pthread_attr_setdetachstate(&attributes, PTHREAD_CREATE_DETACHED);
+        pthread_t thread;
+        if (pthread_create(&thread, &attributes, loaderThreadMain, NULL) == 0) {
+            dispatch_semaphore_wait(loaderStarted, DISPATCH_TIME_FOREVER);
+        }
+        pthread_attr_destroy(&attributes);
+    });
+    return loaderRunLoop;
+}
 
 + (NSURLConnection*)connectionWithRequest:(NSURLRequest *)request delegate:(id<NSURLConnectionDelegate>)delegate
 {

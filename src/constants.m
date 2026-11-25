@@ -7,7 +7,8 @@ NSString * const NSURLAuthenticationMethodHTTPBasic = @"NSURLAuthenticationMetho
 NSString * const NSURLAuthenticationMethodHTTPDigest = @"NSURLAuthenticationMethodHTTPDigest";
 NSString * const NSURLAuthenticationMethodNTLM = @"NSURLAuthenticationMethodNTLM";
 NSString * const NSURLAuthenticationMethodNegotiate = @"NSURLAuthenticationMethodNegotiate";
-// NSURLAuthenticationMethodOAuth
+// The value is not documented; it was read from the exported constant on macOS 26.7.3 and 10.14.4 (black-box observation).
+NSString * const NSURLAuthenticationMethodOAuth = @"NSURLAuthenticationMethodOAuth";
 NSString * const NSURLAuthenticationMethodServerTrust = @"NSURLAuthenticationMethodServerTrust";
 // NSURLAuthenticationMethodXMobileMeAuthToken
 

@@ -97,6 +97,19 @@ extern "C" {
 extern const CFStringRef kCFStreamPropertySSLPeerCertificates        AVAILABLE_MAC_OS_X_VERSION_10_4_AND_LATER;
 
 /*
+ *  kCFStreamPropertySSLPeerTrust
+ *
+ *  Discussion:
+ *    Stream property key for copy operations: the SecTrustRef for the
+ *    peer of a TLS stream, as SSLCopyPeerTrust gives it, once the
+ *    handshake has been done. NULL before then.
+ *
+ *  Availability:
+ *    Mac OS X:         in version 10.5 and later in CoreServices.framework
+ */
+extern const CFStringRef kCFStreamPropertySSLPeerTrust               AVAILABLE_MAC_OS_X_VERSION_10_5_AND_LATER;
+
+/*
  *  kCFStreamPropertySSLSettings
  *  
  *  Discussion:

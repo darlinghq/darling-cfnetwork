@@ -7,6 +7,7 @@
 
 #import <Foundation/NSURLRequest.h>
 #import "NSURLRequestInternal.h"
+#import "CFURLRequestInternal.h"
 #import <Foundation/NSURL.h>
 #import <Foundation/NSDictionary.h>
 #import <Foundation/NSArray.h>
@@ -136,6 +137,61 @@ static NSTimeInterval defaultTimeout = 60.0;
     return YES;
 }
 
+// The Content-Disposition encodings as NSURLRequest gives and takes them
+// (NSStringEncodings) and as the request keeps them (CFStringEncodings). An
+// NSStringEncoding without a CFStringEncoding becomes kCFStringEncodingInvalidId.
+static CFArrayRef createCFEncodings(NSArray *encodings)
+{
+    if (encodings == nil)
+    {
+        return NULL;
+    }
+    CFMutableArrayRef cfEncodings = CFArrayCreateMutable(kCFAllocatorDefault, [encodings count], &kCFTypeArrayCallBacks);
+    for (NSNumber *encoding in encodings)
+    {
+        CFStringEncoding cfEncoding = CFStringConvertNSStringEncodingToEncoding([encoding unsignedLongValue]);
+        CFNumberRef number = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &cfEncoding);
+        CFArrayAppendValue(cfEncodings, number);
+        CFRelease(number);
+    }
+    return cfEncodings;
+}
+
+static NSArray *nsEncodings(CFArrayRef cfEncodings)
+{
+    if (cfEncodings == NULL)
+    {
+        return nil;
+    }
+    NSMutableArray *encodings = [NSMutableArray arrayWithCapacity:CFArrayGetCount(cfEncodings)];
+    for (NSNumber *cfEncoding in (NSArray *)cfEncodings)
+    {
+        [encodings addObject:@(CFStringConvertEncodingToNSStringEncoding([cfEncoding unsignedIntValue]))];
+    }
+    return encodings;
+}
+
+// The private settings, archived under the keys macOS archives them under.
+static const struct {
+    _CFURLRequestFlag flag;
+    NSString *key;
+} archivedFlags[] = {
+    { _kCFURLRequestIgnoreHSTS, @"ignoreHSTS" },
+    { _kCFURLRequestPreventHSTSStorage, @"preventHSTSStorage" },
+    { _kCFURLRequestSchemeWasUpgradedDueToDynamicHSTS, @"schemeWasUpgradedDueToDynamicHSTS" },
+    { _kCFURLRequestPrivacyProxyFailClosed, @"privacyProxyFailClosed" },
+    { _kCFURLRequestUseEnhancedPrivacyMode, @"useEnhancedPrivacyMode" },
+    { _kCFURLRequestPrivacyProxyFailClosedForUnreachableNonMainHosts, @"privacyProxyFailClosedForUnreachableNonMainHosts" },
+    { _kCFURLRequestPrivacyProxyFailClosedForUnreachableHosts, @"privacyProxyFailClosedForUnreachableHosts" },
+    { _kCFURLRequestNeedsNetworkTrackingPrevention, @"knownTracker" },
+    { _kCFURLRequestProhibitPrivacyProxy, @"prohibitPrivacyProxy" },
+    { _kCFURLRequestBlockTrackers, @"blockTrackers" },
+    { _kCFURLRequestAllowPrivateAccessTokensForThirdParty, @"allowPrivateAccessTokensForThirdParty" },
+    { _kCFURLRequestWebSearchContent, @"isWebSearchContent" },
+    { _kCFURLRequestPrivacyProxyStrictFailClosed, @"privacyProxyStrictFailClosed" },
+    { _kCFURLRequestAllowOnlyPartitionedCookies, @"allowOnlyPartitionedCookies" },
+};
+
 - (void)encodeWithCoder:(NSCoder *)coder
 {
     if (![coder allowsKeyedCoding])
@@ -158,18 +214,36 @@ static NSTimeInterval defaultTimeout = 60.0;
     [coder encodeBool:[self allowsConstrainedNetworkAccess] forKey:@"NS.allowsConstrainedNetworkAccess"];
     if ([self HTTPMethod] != nil)
     {
-        [coder encodeObject:[self HTTPMethod] forKey:@"NS.HTTPMethod"];
+        [coder encodeObject:[[[self HTTPMethod] copy] autorelease] forKey:@"NS.HTTPMethod"];
     }
     if ([self allHTTPHeaderFields] != nil)
     {
-        [coder encodeObject:[self allHTTPHeaderFields] forKey:@"NS.HTTPHeaders"];
+        [coder encodeObject:[[[self allHTTPHeaderFields] copy] autorelease] forKey:@"NS.HTTPHeaders"];
     }
     if ([self HTTPBody] != nil)
     {
-        [coder encodeObject:[self HTTPBody] forKey:@"NS.HTTPBody"];
+        [coder encodeObject:[[[self HTTPBody] copy] autorelease] forKey:@"NS.HTTPBody"];
     }
     [coder encodeBool:[self HTTPShouldHandleCookies] forKey:@"NS.HTTPShouldHandleCookies"];
     [coder encodeBool:[self HTTPShouldUsePipelining] forKey:@"NS.HTTPShouldUsePipelining"];
+    for (size_t i = 0; i < sizeof(archivedFlags) / sizeof(archivedFlags[0]); i++)
+    {
+        [coder encodeBool:_CFURLRequestGetFlag(_internal->request, archivedFlags[i].flag) forKey:archivedFlags[i].key];
+    }
+    // Values are written as immutable copies, so that the archive holds the classes that
+    // -initWithCoder: asks for even when secure decoding is strict about exact classes (as
+    // WebKit's is for requests it sends between its processes). Test:
+    // tests/nsurlrequest-strict-secure-coding.m.
+    NSArray *encodings = [[[self contentDispositionEncodingFallbackArray] copy] autorelease];
+    if (encodings != nil)
+    {
+        [coder encodeObject:encodings forKey:@"contentDispositionEncodingFallbackArray"];
+    }
+    NSString *boundInterface = (NSString *)_CFURLRequestGetBoundInterfaceIdentifier(_internal->request);
+    if (boundInterface != nil)
+    {
+        [coder encodeObject:boundInterface forKey:@"boundInterfaceIdentifier"];
+    }
 }
 
 - (id)initWithCoder:(NSCoder *)coder
@@ -182,15 +256,22 @@ static NSTimeInterval defaultTimeout = 60.0;
 
     NSURL *url = [coder decodeObjectOfClass:[NSURL class] forKey:@"NS.url"];
     NSURL *mainDocumentURL = [coder decodeObjectOfClass:[NSURL class] forKey:@"NS.mainDocumentURL"];
-    NSString *method = [coder decodeObjectOfClass:[NSString class] forKey:@"NS.HTTPMethod"];
-    NSData *body = [coder decodeObjectOfClass:[NSData class] forKey:@"NS.HTTPBody"];
-    NSDictionary *headers = [coder decodeObjectOfClasses:[NSSet setWithObjects:[NSDictionary class], [NSString class], nil] forKey:@"NS.HTTPHeaders"];
+    // The mutable classes are accepted too: archives made elsewhere hold them (macOS writes the
+    // header fields as an NSMutableDictionary), and a strict unarchiver accepts only the classes
+    // named here, not their subclasses.
+    NSString *method = [coder decodeObjectOfClasses:[NSSet setWithObjects:[NSString class], [NSMutableString class], nil] forKey:@"NS.HTTPMethod"];
+    NSData *body = [coder decodeObjectOfClasses:[NSSet setWithObjects:[NSData class], [NSMutableData class], nil] forKey:@"NS.HTTPBody"];
+    NSDictionary *headers = [coder decodeObjectOfClasses:[NSSet setWithObjects:[NSDictionary class], [NSMutableDictionary class], [NSString class], [NSMutableString class], nil] forKey:@"NS.HTTPHeaders"];
+    NSArray *encodings = [coder decodeObjectOfClasses:[NSSet setWithObjects:[NSArray class], [NSMutableArray class], [NSNumber class], nil] forKey:@"contentDispositionEncodingFallbackArray"];
+    NSString *boundInterface = [coder decodeObjectOfClasses:[NSSet setWithObjects:[NSString class], [NSMutableString class], nil] forKey:@"boundInterfaceIdentifier"];
     // An object that is archived but of an unexpected class decodes to nil.
     if (([coder containsValueForKey:@"NS.url"] && url == nil) ||
         ([coder containsValueForKey:@"NS.mainDocumentURL"] && mainDocumentURL == nil) ||
         ([coder containsValueForKey:@"NS.HTTPMethod"] && method == nil) ||
         ([coder containsValueForKey:@"NS.HTTPBody"] && body == nil) ||
-        ([coder containsValueForKey:@"NS.HTTPHeaders"] && headers == nil))
+        ([coder containsValueForKey:@"NS.HTTPHeaders"] && headers == nil) ||
+        ([coder containsValueForKey:@"contentDispositionEncodingFallbackArray"] && encodings == nil) ||
+        ([coder containsValueForKey:@"boundInterfaceIdentifier"] && boundInterface == nil))
     {
         [self release];
         return nil;
@@ -261,6 +342,26 @@ static NSTimeInterval defaultTimeout = 60.0;
     {
         CFURLRequestUseHTTPPipelining(request, [coder decodeBoolForKey:@"NS.HTTPShouldUsePipelining"]);
     }
+    for (size_t i = 0; i < sizeof(archivedFlags) / sizeof(archivedFlags[0]); i++)
+    {
+        _CFURLRequestSetFlag(request, archivedFlags[i].flag, [coder decodeBoolForKey:archivedFlags[i].key]);
+    }
+    for (id encoding in encodings)
+    {
+        if (![encoding isKindOfClass:[NSNumber class]])
+        {
+            CFRelease(request);
+            [self release];
+            return nil;
+        }
+    }
+    CFArrayRef cfEncodings = createCFEncodings(encodings);
+    _CFURLRequestSetContentDispositionEncodingFallbackArray(request, cfEncodings);
+    if (cfEncodings != NULL)
+    {
+        CFRelease(cfEncodings);
+    }
+    _CFURLRequestSetBoundInterfaceIdentifier(request, (CFStringRef)boundInterface);
     CFRelease(_internal->request);
     if ([self isKindOfClass:[NSMutableURLRequest class]])
     {
@@ -277,6 +378,25 @@ static NSTimeInterval defaultTimeout = 60.0;
 - (CFURLRequestRef)_CFURLRequest
 {
     return _internal->request;
+}
+
+// Mutable and immutable requests with the same settings are equal.
+- (BOOL)isEqual:(id)object
+{
+    if (object == self)
+    {
+        return YES;
+    }
+    if (![object isKindOfClass:[NSURLRequest class]])
+    {
+        return NO;
+    }
+    return CFEqual(_internal->request, [(NSURLRequest *)object _CFURLRequest]);
+}
+
+- (NSUInteger)hash
+{
+    return CFHash(_internal->request);
 }
 
 - (id)copyWithZone:(NSZone *)zone
@@ -454,6 +574,99 @@ static NSTimeInterval defaultTimeout = 60.0;
 - (void)setHTTPShouldUsePipelining:(BOOL)shouldUsePipelining
 {
     CFURLRequestUseHTTPPipelining((CFMutableURLRequestRef)[self _CFURLRequest], shouldUsePipelining);
+}
+
+@end
+
+// Private settings that WebKit and other system frameworks use. The getters are
+// NSURLRequest's and the setters NSMutableURLRequest's, as on macOS.
+#define REQUEST_FLAG_GETTER(getter, flag) \
+    - (BOOL)getter \
+    { \
+        return _CFURLRequestGetFlag(_internal->request, flag); \
+    }
+#define REQUEST_FLAG_SETTER(setter, flag) \
+    - (void)setter(BOOL)value \
+    { \
+        _CFURLRequestSetFlag((CFMutableURLRequestRef)_internal->request, flag, value); \
+    }
+
+@implementation NSURLRequest (NSURLRequestPrivate)
+
+// The same storage as NSURLProtocol's properties of the request; a request
+// that isn't mutable takes them too.
+- (id)_propertyForKey:(NSString *)key
+{
+    return [(id)_CFURLRequestCopyProtocolPropertyForKey(_internal->request, (CFStringRef)key) autorelease];
+}
+
+- (void)_setProperty:(id)value forKey:(NSString *)key
+{
+    _CFURLRequestSetProtocolProperty(_internal->request, (CFStringRef)key, (CFTypeRef)value);
+}
+
+- (void)_removePropertyForKey:(NSString *)key
+{
+    _CFURLRequestSetProtocolProperty(_internal->request, (CFStringRef)key, NULL);
+}
+
+- (NSArray *)contentDispositionEncodingFallbackArray
+{
+    return nsEncodings(_CFURLRequestGetContentDispositionEncodingFallbackArray(_internal->request));
+}
+
+REQUEST_FLAG_GETTER(_ignoreHSTS, _kCFURLRequestIgnoreHSTS)
+REQUEST_FLAG_GETTER(_preventHSTSStorage, _kCFURLRequestPreventHSTSStorage)
+REQUEST_FLAG_GETTER(_schemeWasUpgradedDueToDynamicHSTS, _kCFURLRequestSchemeWasUpgradedDueToDynamicHSTS)
+REQUEST_FLAG_GETTER(_privacyProxyFailClosed, _kCFURLRequestPrivacyProxyFailClosed)
+REQUEST_FLAG_GETTER(_useEnhancedPrivacyMode, _kCFURLRequestUseEnhancedPrivacyMode)
+REQUEST_FLAG_GETTER(_privacyProxyFailClosedForUnreachableNonMainHosts, _kCFURLRequestPrivacyProxyFailClosedForUnreachableNonMainHosts)
+REQUEST_FLAG_GETTER(_privacyProxyFailClosedForUnreachableHosts, _kCFURLRequestPrivacyProxyFailClosedForUnreachableHosts)
+REQUEST_FLAG_GETTER(_needsNetworkTrackingPrevention, _kCFURLRequestNeedsNetworkTrackingPrevention)
+REQUEST_FLAG_GETTER(_prohibitPrivacyProxy, _kCFURLRequestProhibitPrivacyProxy)
+REQUEST_FLAG_GETTER(_blockTrackers, _kCFURLRequestBlockTrackers)
+REQUEST_FLAG_GETTER(_allowPrivateAccessTokensForThirdParty, _kCFURLRequestAllowPrivateAccessTokensForThirdParty)
+REQUEST_FLAG_GETTER(_isWebSearchContent, _kCFURLRequestWebSearchContent)
+REQUEST_FLAG_GETTER(_privacyProxyStrictFailClosed, _kCFURLRequestPrivacyProxyStrictFailClosed)
+REQUEST_FLAG_GETTER(_allowOnlyPartitionedCookies, _kCFURLRequestAllowOnlyPartitionedCookies)
+
+- (NSString *)boundInterfaceIdentifier
+{
+    return (NSString *)_CFURLRequestGetBoundInterfaceIdentifier(_internal->request);
+}
+
+@end
+
+@implementation NSMutableURLRequest (NSMutableURLRequestPrivate)
+
+- (void)setContentDispositionEncodingFallbackArray:(NSArray *)encodings
+{
+    CFArrayRef cfEncodings = createCFEncodings(encodings);
+    _CFURLRequestSetContentDispositionEncodingFallbackArray((CFMutableURLRequestRef)_internal->request, cfEncodings);
+    if (cfEncodings != NULL)
+    {
+        CFRelease(cfEncodings);
+    }
+}
+
+REQUEST_FLAG_SETTER(_setIgnoreHSTS:, _kCFURLRequestIgnoreHSTS)
+REQUEST_FLAG_SETTER(_setPreventHSTSStorage:, _kCFURLRequestPreventHSTSStorage)
+REQUEST_FLAG_SETTER(_setSchemeWasUpgradedDueToDynamicHSTS:, _kCFURLRequestSchemeWasUpgradedDueToDynamicHSTS)
+REQUEST_FLAG_SETTER(_setPrivacyProxyFailClosed:, _kCFURLRequestPrivacyProxyFailClosed)
+REQUEST_FLAG_SETTER(_setUseEnhancedPrivacyMode:, _kCFURLRequestUseEnhancedPrivacyMode)
+REQUEST_FLAG_SETTER(_setPrivacyProxyFailClosedForUnreachableNonMainHosts:, _kCFURLRequestPrivacyProxyFailClosedForUnreachableNonMainHosts)
+REQUEST_FLAG_SETTER(_setPrivacyProxyFailClosedForUnreachableHosts:, _kCFURLRequestPrivacyProxyFailClosedForUnreachableHosts)
+REQUEST_FLAG_SETTER(_setNeedsNetworkTrackingPrevention:, _kCFURLRequestNeedsNetworkTrackingPrevention)
+REQUEST_FLAG_SETTER(_setProhibitPrivacyProxy:, _kCFURLRequestProhibitPrivacyProxy)
+REQUEST_FLAG_SETTER(_setBlockTrackers:, _kCFURLRequestBlockTrackers)
+REQUEST_FLAG_SETTER(_setAllowPrivateAccessTokensForThirdParty:, _kCFURLRequestAllowPrivateAccessTokensForThirdParty)
+REQUEST_FLAG_SETTER(_setWebSearchContent:, _kCFURLRequestWebSearchContent)
+REQUEST_FLAG_SETTER(_setPrivacyProxyStrictFailClosed:, _kCFURLRequestPrivacyProxyStrictFailClosed)
+REQUEST_FLAG_SETTER(_setAllowOnlyPartitionedCookies:, _kCFURLRequestAllowOnlyPartitionedCookies)
+
+- (void)setBoundInterfaceIdentifier:(NSString *)identifier
+{
+    _CFURLRequestSetBoundInterfaceIdentifier((CFMutableURLRequestRef)_internal->request, (CFStringRef)identifier);
 }
 
 @end

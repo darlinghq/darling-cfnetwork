@@ -2004,7 +2004,10 @@ CFHTTPAuthenticationRef CFHTTPAuthenticationCreateFromResponse(CFAllocatorRef al
     
     CFRelease(headerValue);
     
-    url = CFHTTPMessageCopyRequestURL(response);
+    // a proxy's challenge is for the proxy, when the response says which one
+    url = (code == 407) ? _CFHTTPMessageCopyResponseProxyURL(response) : NULL;
+    if (url == NULL)
+        url = CFHTTPMessageCopyRequestURL(response);
 	if (url) {
 		
 		CFIndex length;

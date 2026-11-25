@@ -33,6 +33,18 @@ CFURLResponseRef CFURLResponseCreateWithCFHTTPMessage(CFAllocatorRef allocator,
                                                       CFURLRef request,
                                                       CFHTTPMessageRef responseMessage);
 
+// The HTTP message of an HTTP response, NULL for another response.
+CF_EXPORT
+CFHTTPMessageRef CFURLResponseGetHTTPResponse(CFURLResponseRef response);
+
+CF_EXPORT
+void CFURLResponseSetMIMEType(CFURLResponseRef response, CFStringRef mimeType);
+
+// TLS details of the connection that gave the response: the server's trust under
+// kCFStreamPropertySSLPeerTrust; NULL without TLS.
+CF_EXPORT
+CFDictionaryRef _CFURLResponseGetSSLCertificateContext(CFURLResponseRef response);
+
 CF_EXPORT
 CFURLResponseRef CFURLResponseCreateCopy(CFAllocatorRef allocator,
                                          CFURLResponseRef response);

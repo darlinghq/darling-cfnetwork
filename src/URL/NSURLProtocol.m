@@ -9,6 +9,8 @@
 #import "NSURLProtocolInternal.h"
 #import <Foundation/NSObjectInternal.h>
 #import <Foundation/NSURLRequest.h>
+#import "NSURLRequestInternal.h"
+#import <CFNetwork/CFURLRequest.h>
 #import <objc/runtime.h>
 #import <Foundation/NSURL.h>
 #import <Foundation/NSArray.h>
@@ -121,19 +123,21 @@ static NSMutableArray *sRegisteredClasses = nil;
     return [self canInitWithRequest:a] && [self canInitWithRequest:b] && ok;
 }
 
+// The properties belong to the request's CFURLRequest, so that they are
+// copied with the request and that CFNetwork's own callers see them too.
 + (id)propertyForKey:(NSString *)key inRequest:(NSURLRequest *)request
 {
-    return objc_getAssociatedObject(request, key);
+    return [(id)_CFURLRequestCopyProtocolPropertyForKey([request _CFURLRequest], (CFStringRef)key) autorelease];
 }
 
 + (void)setProperty:(id)value forKey:(NSString *)key inRequest:(NSMutableURLRequest *)request
 {
-    objc_setAssociatedObject(request, key, value, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    _CFURLRequestSetProtocolProperty([request _CFURLRequest], (CFStringRef)key, (CFTypeRef)value);
 }
 
 + (void)removePropertyForKey:(NSString *)key inRequest:(NSMutableURLRequest *)request
 {
-    objc_setAssociatedObject(request, key, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    _CFURLRequestSetProtocolProperty([request _CFURLRequest], (CFStringRef)key, NULL);
 }
 
 + (BOOL)registerClass:(Class)protocolClass

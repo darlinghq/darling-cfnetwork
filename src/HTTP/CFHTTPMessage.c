@@ -58,6 +58,7 @@ struct __CFHTTPMessage {
     CFDataRef _data;
 	CFHTTPAuthenticationRef _auth;
 	CFHTTPAuthenticationRef _proxyAuth;
+    CFURLRef _proxyURL; // of a response: the proxy that sent it, if one did
     UInt32 _flags;
 };
 
@@ -193,6 +194,7 @@ static void __CFHTTPMessageDeallocate(CFTypeRef cf) {
     if (req->_data) CFRelease(req->_data);
 	if (req->_auth) CFRelease(req->_auth);
 	if (req->_proxyAuth) CFRelease(req->_proxyAuth);
+    if (req->_proxyURL) CFRelease(req->_proxyURL);
     if (req->_lastKey) CFRelease(req->_lastKey);
 }
 
@@ -301,6 +303,7 @@ CFHTTPMessageRef CFHTTPMessageCreateCopy(CFAllocatorRef allocator, CFHTTPMessage
         result->_firstLine = msg->_firstLine ? CFStringCreateCopy(allocator, msg->_firstLine) : NULL;
         result->_method = msg->_method ? CFRetain(msg->_method) : NULL;
         result->_url = msg->_url ? CFRetain(msg->_url) : NULL;
+        result->_proxyURL = msg->_proxyURL ? CFRetain(msg->_proxyURL) : NULL;
         result->_headers = CFDictionaryCreateMutableCopy(allocator, (CFDictionaryGetCount(msg->_headers) >= 16 ? 0 : 16), msg->_headers);
         result->_headerOrder = CFArrayCreateMutableCopy(allocator, (CFArrayGetCount(msg->_headerOrder) >= 16 ? 0 : 16), msg->_headerOrder);
         result->_flags = msg->_flags;
@@ -797,6 +800,18 @@ void _CFHTTPMessageSetResponseURL(CFHTTPMessageRef response, CFURLRef url) {
     CFRetain(url);
     if (response->_url) CFRelease(response->_url);
     response->_url = url;
+}
+
+// The proxy a response came from (as for a proxy's answer to CONNECT): a
+// proxy's authentication challenge is then for the proxy's host.
+void _CFHTTPMessageSetResponseProxyURL(CFHTTPMessageRef response, CFURLRef proxyURL) {
+    if (proxyURL) CFRetain(proxyURL);
+    if (response->_proxyURL) CFRelease(response->_proxyURL);
+    response->_proxyURL = proxyURL;
+}
+
+CFURLRef _CFHTTPMessageCopyResponseProxyURL(CFHTTPMessageRef response) {
+    return response->_proxyURL ? (CFURLRef)CFRetain(response->_proxyURL) : NULL;
 }
 
 // Assert if response is a request, not a response.  Return -1 if we haven't parsed a response code yet

@@ -152,6 +152,13 @@
     return (NSString *)CFURLResponseGetMIMEType([self _CFURLResponse]);
 }
 
+// SPI: replaces the MIME type and nothing else; the header fields and text
+// encoding stay as they are (macOS 26.7.3). Test: nsurlresponse-set-mime-type.m.
+- (void)_setMIMEType:(NSString *)MIMEType
+{
+    CFURLResponseSetMIMEType([self _CFURLResponse], (CFStringRef)MIMEType);
+}
+
 - (NSURL *)URL
 {
     return (NSURL *)CFURLResponseGetURL([self _CFURLResponse]);
@@ -522,6 +529,25 @@ static inline NSString *NSURLLocalizedString(NSString *key)
 - (NSDictionary *)allHeaderFields
 {
     return (NSDictionary *)CFURLResponseGetHeaderFields([self _CFURLResponse]);
+}
+
+// Header field names are case-insensitive (RFC 9110, section 5.1).
+- (NSString *)valueForHTTPHeaderField:(NSString *)field
+{
+    NSDictionary *fields = [self allHeaderFields];
+    NSString *value = [fields objectForKey:field];
+    if (value != nil)
+    {
+        return value;
+    }
+    for (NSString *name in fields)
+    {
+        if ([name caseInsensitiveCompare:field] == NSOrderedSame)
+        {
+            return [fields objectForKey:name];
+        }
+    }
+    return nil;
 }
 
 @end

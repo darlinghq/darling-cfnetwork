@@ -6,6 +6,9 @@
 //
 
 #include "CFURLConnection.h"
+#include "CFURLStorageSessionInternal.h"
+#include "CFURLResponseInternal.h"
+#include <CFNetwork/CFSocketStream.h>
 #include <CFNetwork/CFHTTPMessage.h>
 #include <CFNetwork/CFHTTPStream.h>
 #include <CFNetwork/CFProxySupport.h>
@@ -22,6 +25,10 @@
 #include <zlib.h>
 #include <pthread.h>
 #include "CFHTTPCookieStorage.h"
+
+// A connection property: a CFBoolean, whether the loader may sniff the MIME
+// type of the content. Darling's own string; the loader does not sniff.
+const CFStringRef _kCFURLConnectionPropertyShouldSniff = CFSTR("_kCFURLConnectionPropertyShouldSniff");
 #include "CFRuntimeUtils.h"
 
 #ifndef NDEBUG
@@ -320,9 +327,12 @@ static void openConnection(struct _CFURLConnection * connection) {
     if (replayCached(connection)) {
         return;
     }
-    CFDictionaryRef cookiesHeaderFields = CFURLRequestShouldHandleCookes(connection->request)
-        ? CFHTTPCookieStorageCopyRequestHeaderFieldsForURL(CFHTTPCookieStorageGetDefault(), CFURLRequestGetURL(connection->request))
-        : NULL;
+    CFDictionaryRef cookiesHeaderFields = NULL;
+    if (CFURLRequestShouldHandleCookes(connection->request)) {
+        CFHTTPCookieStorageRef cookieStorage = __CFURLStorageSessionCopyCookieStorageOrDefault(__CFURLRequestGetStorageSession(connection->request));
+        cookiesHeaderFields = CFHTTPCookieStorageCopyRequestHeaderFieldsForURL(cookieStorage, CFURLRequestGetURL(connection->request));
+        CFRelease(cookieStorage);
+    }
     if (cookiesHeaderFields != NULL) {
         CFMutableURLRequestRef alteredRequest = CFURLRequestCreateMutableCopy(kCFAllocatorDefault, connection->request);
         CFURLRequestAddValueForHTTPField(alteredRequest, CFSTR("Cookie"), CFDictionaryGetValue(cookiesHeaderFields, CFSTR("Cookie")));
@@ -507,9 +517,17 @@ static void readStreamEvent(CFReadStreamRef stream, CFStreamEventType type, void
         if (message != NULL && CFHTTPMessageIsHeaderComplete(message)) {
             CFURLRef finalUrl = CFReadStreamCopyProperty(stream, kCFStreamPropertyHTTPFinalURL);
             CFURLResponseRef response = CFURLResponseCreateWithCFHTTPMessage(kCFAllocatorDefault, finalUrl, message);
+            // the server's trust, for an https load
+            CFTypeRef peerTrust = CFReadStreamCopyProperty(stream, kCFStreamPropertySSLPeerTrust);
+            if (peerTrust != NULL) {
+                __CFURLResponseSetSSLPeerTrust(response, peerTrust);
+                CFRelease(peerTrust);
+            }
             if (CFURLRequestShouldHandleCookes(connection->request)) {
                 CFURLRef mainDocumentURL = CFURLRequestCopyMainDocumentURL(connection->request);
-                CFHTTPCookieStorageSetCookiesWithResponseHeaderFieldsForMainDocument(CFHTTPCookieStorageGetDefault(), CFURLResponseGetHeaderFields(response), finalUrl, mainDocumentURL);
+                CFHTTPCookieStorageRef cookieStorage = __CFURLStorageSessionCopyCookieStorageOrDefault(__CFURLRequestGetStorageSession(connection->request));
+                CFHTTPCookieStorageSetCookiesWithResponseHeaderFieldsForMainDocument(cookieStorage, CFURLResponseGetHeaderFields(response), finalUrl, mainDocumentURL);
+                CFRelease(cookieStorage);
                 if (mainDocumentURL != NULL) {
                     CFRelease(mainDocumentURL);
                 }
@@ -1363,8 +1381,8 @@ static void cacheData(struct _CFURLConnection *connection, CFDataRef data) {
 
     size_t maxCachedDataSize = 0;
     {
-        CFURLCacheRef cache = NULL;
-        if (CFURLCacheGetShared(&cache)) {
+        CFURLCacheRef cache = __CFURLStorageSessionCopyCacheOrShared(__CFURLRequestGetStorageSession(connection->request));
+        if (cache) {
             // In documentation for 'connection:willCacheResponse:' Apple specifies
             // that cache entry must not be larger than 5% of the disk cache size.
             maxCachedDataSize = CFURLCacheDiskCapacity(cache) / 20;
@@ -1434,8 +1452,8 @@ static void finishCaching(struct _CFURLConnection *connection) {
         connection->handler.cache(connection->handler.info, originalCachedResponse):
         originalCachedResponse;
     if (cachedResponse) {
-        CFURLCacheRef cache = NULL;
-        if (CFURLCacheGetShared(&cache)) {
+        CFURLCacheRef cache = __CFURLStorageSessionCopyCacheOrShared(__CFURLRequestGetStorageSession(connection->request));
+        if (cache) {
             CFURLCacheAddCachedResponseForRequest(cache, cachedResponse, connection->request);
             CFRelease(cache);
         }
@@ -1449,8 +1467,8 @@ static Boolean replayCached(struct _CFURLConnection *connection) {
     CFCachedURLResponseRef cachedResponse = NULL;
     CFDataRef data = NULL;
     do {
-        CFURLCacheRef cache = NULL;
-        if (CFURLCacheGetShared(&cache)) {
+        CFURLCacheRef cache = __CFURLStorageSessionCopyCacheOrShared(__CFURLRequestGetStorageSession(connection->request));
+        if (cache) {
             cachedResponse = CFURLCacheCopyResponseForRequest(cache, connection->request);
             CFRelease(cache);
         }

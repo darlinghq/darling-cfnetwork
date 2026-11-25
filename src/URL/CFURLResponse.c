@@ -9,6 +9,9 @@
 // okhttp Android project: http://goo.gl/ncNJYI
 
 #include "CFURLResponse.h"
+#include "CFCachedURLResponse.h"
+#include "CFURLResponseInternal.h"
+#include <CFNetwork/CFSocketStream.h>
 #include <CoreFoundation/CFNumber.h>
 #include <dispatch/dispatch.h>
 #include <stdlib.h>
@@ -68,6 +71,14 @@ typedef struct _CFURLResponse {
 
     OSSpinLock parsedHeadersLock;
     ParsedHeaders* parsedHeaders;
+
+    // the TLS details of the connection: { kCFStreamPropertySSLPeerTrust: trust }
+    CFDictionaryRef sslContext;
+
+    // the HTTP message of an HTTP response; made from the other fields on
+    // demand when the response was not made from one (guarded by
+    // parsedHeadersLock)
+    CFHTTPMessageRef httpMessage;
 } _CFURLResponse;
 
 static _CFURLResponse* allocateResponse(CFAllocatorRef allocator);
@@ -108,6 +119,12 @@ static void responseDeallocate(CFTypeRef cf) {
     }
     if (response->parsedHeaders) {
         parsedHeadersDestroy(response->parsedHeaders);
+    }
+    if (response->httpMessage) {
+        CFRelease(response->httpMessage);
+    }
+    if (response->sslContext) {
+        CFRelease(response->sslContext);
     }
 }
 
@@ -206,8 +223,100 @@ CFURLResponseRef CFURLResponseCreateWithCFHTTPMessage(CFAllocatorRef allocator,
     }
 
     response->statusCode = CFHTTPMessageGetResponseStatusCode(responseMessage);
+    response->httpVersion = CFHTTPMessageCopyVersion(responseMessage);
+    // a copy, since the caller may go on changing its message
+    response->httpMessage = CFHTTPMessageCreateCopy(allocator, responseMessage);
 
     return response;
+}
+
+// The storage policy is the cache's to decide, from the response and the
+// request; the response does not keep it.
+CFURLResponseRef CFURLResponseCreateWithHTTPResponse(CFAllocatorRef allocator, CFURLRef url,
+                                                     CFHTTPMessageRef responseMessage,
+                                                     CFCachedURLStoragePolicy storagePolicy)
+{
+    if (url == NULL || responseMessage == NULL) {
+        return NULL;
+    }
+    return CFURLResponseCreateWithCFHTTPMessage(allocator, url, responseMessage);
+}
+
+static CFHTTPMessageRef createMessageFromFields(CFURLResponseRef response) {
+    CFHTTPMessageRef message = CFHTTPMessageCreateResponse(kCFAllocatorDefault, response->statusCode, NULL,
+                                                           response->httpVersion ? response->httpVersion : kCFHTTPVersion1_1);
+    if (message && response->headerFields) {
+        CFIndex count = CFDictionaryGetCount(response->headerFields);
+        const void **keys = malloc(sizeof(void *) * count);
+        const void **values = malloc(sizeof(void *) * count);
+        CFDictionaryGetKeysAndValues(response->headerFields, keys, values);
+        for (CFIndex i = 0; i < count; i++) {
+            CFHTTPMessageSetHeaderFieldValue(message, (CFStringRef)keys[i], (CFStringRef)values[i]);
+        }
+        free(keys);
+        free(values);
+    }
+    return message;
+}
+
+// NULL for a response that is not an HTTP one.
+CFHTTPMessageRef CFURLResponseGetHTTPResponse(CFURLResponseRef response) {
+    if (!response->isHTTPResponse) {
+        return NULL;
+    }
+    _CFURLResponse* mutableResponse = (_CFURLResponse*)response;
+    OSSpinLockLock(&mutableResponse->parsedHeadersLock);
+    CFHTTPMessageRef message = mutableResponse->httpMessage;
+    OSSpinLockUnlock(&mutableResponse->parsedHeadersLock);
+    if (message) {
+        return message;
+    }
+
+    // a response from an archive or a parcel: made without the lock held, and
+    // a message made meanwhile wins
+    CFHTTPMessageRef created = createMessageFromFields(response);
+    OSSpinLockLock(&mutableResponse->parsedHeadersLock);
+    if (!mutableResponse->httpMessage) {
+        mutableResponse->httpMessage = created;
+        created = NULL;
+    }
+    message = mutableResponse->httpMessage;
+    OSSpinLockUnlock(&mutableResponse->parsedHeadersLock);
+    if (created) {
+        CFRelease(created);
+    }
+    return message;
+}
+
+// Replaces the MIME type, as a loader does once it has sniffed the content.
+// Not safe while another thread reads the type.
+void CFURLResponseSetMIMEType(CFURLResponseRef response, CFStringRef mimeType) {
+    _CFURLResponse* mutableResponse = (_CFURLResponse*)response;
+    CFStringRef copy = mimeType ? CFStringCreateCopy(CFGetAllocator(response), mimeType) : NULL;
+    CFStringRef old = mutableResponse->mimeType;
+    mutableResponse->mimeType = copy;
+    if (old) {
+        CFRelease(old);
+    }
+}
+
+// The TLS details of the connection that gave the response: the server's
+// trust, under kCFStreamPropertySSLPeerTrust. NULL for a response that did
+// not come over TLS.
+CFDictionaryRef _CFURLResponseGetSSLCertificateContext(CFURLResponseRef response) {
+    return response->sslContext;
+}
+
+// Set once, by the connection, before the response is handed out.
+void __CFURLResponseSetSSLPeerTrust(CFURLResponseRef response, CFTypeRef peerTrust) {
+    _CFURLResponse* mutableResponse = (_CFURLResponse*)response;
+    if (mutableResponse->sslContext != NULL || peerTrust == NULL) {
+        return;
+    }
+    const void* keys[] = { kCFStreamPropertySSLPeerTrust };
+    const void* values[] = { peerTrust };
+    mutableResponse->sslContext = CFDictionaryCreate(CFGetAllocator(response), keys, values, 1,
+                                                     &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
 }
 
 CFURLResponseRef CFURLResponseCreateCopy(CFAllocatorRef allocator, CFURLResponseRef response) {

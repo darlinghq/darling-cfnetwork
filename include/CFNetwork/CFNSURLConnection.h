@@ -8,16 +8,10 @@
 
 #import <Foundation/Foundation.h>
 
-// What NSURLSession measured for one task. Darling's transport keeps no per-transaction
-// timings, so transactionMetrics is empty; taskInterval spans resume to completion.
-@interface NSURLSessionTaskMetrics : NSObject {
-    NSDateInterval *_taskInterval;
-    NSUInteger _redirectCount;
-}
-
-@property (readonly, copy) NSArray *transactionMetrics;
-@property (readonly, copy) NSDateInterval* taskInterval;
-@property (readonly, assign) NSUInteger redirectCount;
+// What NSURLSession measured for one task (the class is in Foundation's header).
+// Darling's transport keeps no per-transaction timings, so transactionMetrics is
+// empty; taskInterval spans resume to completion.
+@interface NSURLSessionTaskMetrics (CFNSPrivateStuff)
 
 - (id)_initWithTaskInterval:(NSDateInterval *)taskInterval redirectCount:(NSUInteger)redirectCount;
 

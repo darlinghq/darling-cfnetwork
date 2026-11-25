@@ -6,6 +6,8 @@
 #include <CoreFoundation/CFDate.h>
 #include <CoreFoundation/CFURL.h>
 #include <CoreFoundation/CFDictionary.h>
+#include <CoreFoundation/CFData.h>
+#include <CoreFoundation/CFRunLoop.h>
 #include "CFHTTPCookie.h"
 #if PRAGMA_ONCE
 #pragma once
@@ -38,9 +40,22 @@ CFArrayRef CFHTTPCookieStorageCopyCookiesForURL(CFHTTPCookieStorageRef storage, 
 // covering the host of `url`. `mainDocumentURL` may be NULL.
 void CFHTTPCookieStorageSetCookiesForURL(CFHTTPCookieStorageRef storage, CFArrayRef cookies, CFURLRef url, CFURLRef mainDocumentURL);
 void CFHTTPCookieStorageDeleteCookiesSinceDate(CFHTTPCookieStorageRef storage, CFDateRef date);
+void CFHTTPCookieStorageDeleteAllCookies(CFHTTPCookieStorageRef storage);
 CFHTTPCookieStorageAcceptPolicy CFHTTPCookieStorageGetAcceptPolicy(CFHTTPCookieStorageRef storage);
 void CFHTTPCookieStorageSetAcceptPolicy(CFHTTPCookieStorageRef storage, CFHTTPCookieStorageAcceptPolicy policy);
+CFHTTPCookieStorageAcceptPolicy CFHTTPCookieStorageGetCookieAcceptPolicy(CFHTTPCookieStorageRef storage);
+void CFHTTPCookieStorageSetCookieAcceptPolicy(CFHTTPCookieStorageRef storage, CFHTTPCookieStorageAcceptPolicy policy);
+// The default storage; the allocator is not used.
+CFHTTPCookieStorageRef _CFHTTPCookieStorageGetDefault(CFAllocatorRef allocator);
 void CFHTTPCookieStorageSetChangeCallBack(CFHTTPCookieStorageRef storage, CFHTTPCookieStorageChangeCallBack callBack, void *info);
+// Calls the change callback on the run loop, in the mode, rather than on the thread that made the change.
+void CFHTTPCookieStorageScheduleWithRunLoop(CFHTTPCookieStorageRef storage, CFRunLoopRef runLoop, CFStringRef mode);
+
+// A persistent storage kept in the file at `url`; `sharedStorage` is not used.
+CFHTTPCookieStorageRef CFHTTPCookieStorageCreateFromFile(CFAllocatorRef allocator, CFURLRef url, CFHTTPCookieStorageRef sharedStorage);
+// Data naming a persistent storage's file, and a new storage on the file such data names.
+CFDataRef CFHTTPCookieStorageCreateIdentifyingData(CFAllocatorRef allocator, CFHTTPCookieStorageRef storage);
+CFHTTPCookieStorageRef CFHTTPCookieStorageCreateFromIdentifyingData(CFAllocatorRef allocator, CFDataRef data);
 
 void CFHTTPCookieStorageSetCookiesWithResponseHeaderFieldsForMainDocument(CFHTTPCookieStorageRef storage, CFDictionaryRef headerFields, CFURLRef url, CFURLRef mainDocumentURL);
 void CFHTTPCookieStorageSetCookiesWithResponseHeaderFields(CFHTTPCookieStorageRef storage, CFDictionaryRef headerFields, CFURLRef url);
